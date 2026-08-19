@@ -1,0 +1,124 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// お知らせモデル
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  category  String   @default("お知らせ")
+  status    String   @default("公開済み")
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Photo {
+  id        String   @id @default(cuid())
+  name      String
+  url       String
+  category  String   @default("一般")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// クリエイターモデル
+model Creator {
+  id        String   @id @default(uuid())
+  name      String
+  role      String?
+  skills    String?  // 使用ソフト・スキル
+  bio       String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  works     Work[]
+}
+
+// 作品モデル
+model Work {
+  id          String   @id @default(cuid())
+  title       String
+  category    String   // 例: Webデザイン, 映像, イラスト
+  description String
+  imageUrl    String?  // サムネイル画像URL
+  creatorId   String?
+  creator     Creator? @relation(fields: [creatorId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Setting {
+  id           String   @id @default("site_settings")
+  siteTitle    String   @default("BeSmile")
+  heroTitle    String   @default("笑顔とクリエイティブを届ける")
+  heroSubtitle String   @default("映像・グラフィック・Web制作のプロフェッショナル集団です。")
+  mainImageUrl String   @default("/icons/top.png")
+  contactEmail String   @default("info@besmile.example.com")
+  updatedAt    DateTime @updatedAt
+}
+
+model Inquiry {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  type      String   @default("その他")
+  message   String
+  status    String   @default("未対応")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      String   @default("管理者")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ★ トップページ・ヘッダー・フッター設定モデル（修正）
+model TopSetting {
+  id               String   @id @default("top_settings")
+  heroTitle        String?  @default("笑顔とクリエイティブを届ける") // ヘッダーロゴ文字
+  heroSubtitle     String?  @default("映像・グラフィック・Web制作のプロフェッショナル集団です。") // ロゴ種別JSON
+  mainImageUrl     String?  @default("/icons/top.png") // メインビジュアル画像JSON
+  aboutTitle       String?  @default("私たちについて") // ヘッダーロゴ画像URL
+  aboutDescription String?  @default("お客様の想いをカタチにし、感動と笑顔を生み出すクリエイティブを提供します。") // フッターコメント
+  footerLogoUrl    String?  @default("/icons/top.png") // ★ 追加：フッターロゴ画像URL
+  footerLogoText   String?  @default("BeSmile")        // ★ 追加：フッターロゴ文字
+  updatedAt        DateTime @updatedAt
+}
+
+model SiteSetting {
+  id            String   @id @default("default")
+  headerLogoUrl String   @default("/icons/top.png")
+  heroImages    String[] @default(["/icons/photos.png", "/icons/works.png", "/icons/creators.png", "/icons/header.png"])
+  footerLogoUrl String   @default("/icons/top.png")
+  footerComment String   @default("Be Smileは、クリエイターの魅力を最大限に届けるプラットフォームです。")
+  updatedAt     DateTime @updatedAt
+}
+
+model AdminUser {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+// アクセスログモデル
+model AccessLog {
+  id        String   @id @default(cuid())
+  path      String   @default("/")
+  ageGroup  String?  @default("その他") // 20代, 30代, 40代, その他
+  ip        String?
+  createdAt DateTime @default(now())
+}
