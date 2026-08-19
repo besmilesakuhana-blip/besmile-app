@@ -56,10 +56,13 @@ model Work {
 model Setting {
   id           String   @id @default("site_settings")
   siteTitle    String   @default("BeSmile")
+  siteUrl      String?  @default("")
   heroTitle    String   @default("笑顔とクリエイティブを届ける")
   heroSubtitle String   @default("映像・グラフィック・Web制作のプロフェッショナル集団です。")
   mainImageUrl String   @default("/icons/top.png")
   contactEmail String   @default("info@besmile.example.com")
+  smtpUser     String?  @default("")
+  smtpPass     String?  @default("")
   updatedAt    DateTime @updatedAt
 }
 
