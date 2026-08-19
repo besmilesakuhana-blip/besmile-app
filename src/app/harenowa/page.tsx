@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -28,7 +28,7 @@ const isVideoUrl = (url: string) => {
   return /\.(mp4|webm|mov|m4v|ogv)$/.test(cleanUrl);
 };
 
-export default function HarenowaPage() {
+function HarenowaContent() {
   const searchParams = useSearchParams();
   const creatorId = searchParams.get('id');
   const targetWorkId = searchParams.get('workId');
@@ -55,7 +55,11 @@ export default function HarenowaPage() {
   useEffect(() => {
     const fetchCreatorDetailAndSettings = async () => {
       try {
-        const resCreator = await fetch('/api/creators', { cache: 'no-store' });
+        const [resCreator, resSettings] = await Promise.all([
+          fetch('/api/creators'),
+          fetch('/api/settings/header-footer'),
+        ]);
+
         if (resCreator.ok) {
           const data = await resCreator.json();
           if (data && data.length > 0) {
@@ -66,7 +70,6 @@ export default function HarenowaPage() {
           }
         }
 
-        const resSettings = await fetch('/api/settings/header-footer', { cache: 'no-store' });
         if (resSettings.ok) {
           const s = await resSettings.json();
           setHeaderLogoType(s.headerLogoType || 'text');
@@ -324,7 +327,6 @@ export default function HarenowaPage() {
             <p className="modal-no">No.{selectedWork.no}</p>
             <h2>{selectedWork.title}</h2>
 
-            {/* メイン拡大表示枠 */}
             <div className="my-4 w-full h-[380px] md:h-[420px] overflow-hidden flex items-center justify-center rounded-lg bg-gray-100 p-4">
               {isVideoUrl(modalDisplayImage || selectedWork.imageUrl) ? (
                 <video
@@ -354,7 +356,6 @@ export default function HarenowaPage() {
               )}
             </div>
 
-            {/* ★ サブ画像サムネイル一覧 ★ */}
             {(() => {
               const rawImages = [selectedWork.imageUrl, ...(selectedWork.subImages || [])].filter(Boolean);
               const allImages = Array.from(new Set(rawImages));
@@ -425,7 +426,6 @@ export default function HarenowaPage() {
               <Link href="/#contact">CONTACT</Link>
             </nav>
 
-            {/* SNSボタン */}
             <div className="flex items-center gap-3">
               <a
                 href={instagramUrl}
@@ -458,5 +458,19 @@ export default function HarenowaPage() {
         </div>
       </footer>
     </>
+  );
+}
+
+export default function HarenowaPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-gray-400">
+          読み込み中...
+        </div>
+      }
+    >
+      <HarenowaContent />
+    </Suspense>
   );
 }

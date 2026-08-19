@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 
@@ -16,7 +16,7 @@ type AccountItem = {
 
 const ITEMS_PER_PAGE = 5;
 
-export default function AccountsPage() {
+function AccountsContent() {
   const searchParams = useSearchParams();
   const targetId = searchParams.get('id');
 
@@ -391,5 +391,19 @@ export default function AccountsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function AccountsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          アカウント管理画面を読み込み中...
+        </div>
+      }
+    >
+      <AccountsContent />
+    </Suspense>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -14,7 +14,7 @@ const isVideoUrl = (url: string) => {
   return /\.(mp4|webm|mov|m4v|ogv)$/.test(cleanUrl);
 };
 
-export default function ArtistsPage() {
+function ArtistsContent() {
   const searchParams = useSearchParams();
   const highlightWorkId = searchParams.get('highlightWorkId');
 
@@ -37,13 +37,16 @@ export default function ArtistsPage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const resCreators = await fetch('/api/creators');
+        const [resCreators, resSettings] = await Promise.all([
+          fetch('/api/creators'),
+          fetch('/api/settings/header-footer'),
+        ]);
+
         if (resCreators.ok) {
           const data = await resCreators.json();
           setCreators(data);
         }
 
-        const resSettings = await fetch('/api/settings/header-footer', { cache: 'no-store' });
         if (resSettings.ok) {
           const s = await resSettings.json();
           setHeaderLogoType(s.headerLogoType || 'text');
@@ -211,7 +214,7 @@ export default function ArtistsPage() {
               <Link href="/#contact">CONTACT</Link>
             </nav>
 
-            {/* SNSボタン (動的リンク) */}
+            {/* SNSボタン */}
             <div className="flex items-center gap-3">
               <a
                 href={instagramUrl}
@@ -244,5 +247,19 @@ export default function ArtistsPage() {
         </div>
       </footer>
     </>
+  );
+}
+
+export default function ArtistsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-gray-400">
+          読み込み中...
+        </div>
+      }
+    >
+      <ArtistsContent />
+    </Suspense>
   );
 }

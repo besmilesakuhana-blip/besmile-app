@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 
@@ -15,7 +15,7 @@ type PhotoItem = {
 
 const ITEMS_PER_PAGE = 5;
 
-export default function PhotosPage() {
+function PhotosContent() {
   const searchParams = useSearchParams();
   const targetId = searchParams.get('id');
 
@@ -379,5 +379,19 @@ export default function PhotosPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function PhotosPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          写真素材画面を読み込み中...
+        </div>
+      }
+    >
+      <PhotosContent />
+    </Suspense>
   );
 }

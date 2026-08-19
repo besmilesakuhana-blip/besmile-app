@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 
@@ -61,7 +61,7 @@ const isVideoUrl = (url: string) => {
   );
 };
 
-export default function WorksPage() {
+function WorksContent() {
   const searchParams = useSearchParams();
   const targetId = searchParams.get('id');
   const targetCategory = searchParams.get('category');
@@ -461,7 +461,7 @@ export default function WorksPage() {
                   </div>
                 </div>
 
-                {/* 詳細用サブ画像（複数管理） */}
+                {/* 詳細用サブ画像 */}
                 <div className="border-t pt-4 space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="block text-sm font-bold text-gray-800">
@@ -600,5 +600,19 @@ export default function WorksPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function WorksPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          作品管理画面を読み込み中...
+        </div>
+      }
+    >
+      <WorksContent />
+    </Suspense>
   );
 }

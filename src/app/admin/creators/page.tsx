@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Image from 'next/image';
 import { useSearchParams } from 'next/navigation';
 
@@ -36,7 +36,7 @@ const isVideoUrl = (url: string) => {
   return typeof url === 'string' && /\.(mp4|webm|mov|m4v)$/i.test(url);
 };
 
-export default function CreatorsPage() {
+function CreatorsContent() {
   const searchParams = useSearchParams();
   const targetId = searchParams.get('id');
   const targetRole = searchParams.get('role');
@@ -604,5 +604,19 @@ export default function CreatorsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function CreatorsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          クリエイター管理画面を読み込み中...
+        </div>
+      }
+    >
+      <CreatorsContent />
+    </Suspense>
   );
 }
