@@ -1,13 +1,11 @@
 import Link from 'next/link';
 import Script from 'next/script';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '@/lib/prisma';
 import ContactForm from '@/app/components/ContactForm';
 import AnalyticsTracker from '@/app/components/AnalyticsTracker';
 
-const prisma = new PrismaClient();
-
-// 毎回DBへアクセスするのを防ぐため、60秒間キャッシュを保持
-export const revalidate = 60;
+// 常に最新のデータベース情報を取得するように設定
+export const dynamic = 'force-dynamic';
 
 const isVideoUrl = (url: string) => {
   if (typeof url !== 'string' || !url) return false;
@@ -284,7 +282,6 @@ export default async function HomePage() {
                 <p>お仕事のご相談・お見積りなど、<br />お気軽にお問い合わせください。</p>
               </div>
 
-              {/* 制作相談・見学案内画像カード */}
               <div className="relative overflow-hidden w-full h-80 md:h-96">
                 <img
                   src="/assets/images/top-contact-bg.jpg"
@@ -330,7 +327,6 @@ export default async function HomePage() {
               <a href="#contact">CONTACT</a>
             </nav>
 
-            {/* SNSボタン (動的リンク) */}
             <div className="flex items-center gap-3">
               <a
                 href={instagramUrl}
