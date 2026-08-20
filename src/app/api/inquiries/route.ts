@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import nodemailer from 'nodemailer';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const type = searchParams.get('type');
@@ -75,6 +77,7 @@ export async function PUT(req: Request) {
   try {
     const body = await req.json();
 
+    // 1. お問い合わせ設定（文面など）の更新
     if (body.isSettings) {
       const updatedSettings = await prisma.topSetting.upsert({
         where: { id: 'inquiry_settings' },
@@ -87,6 +90,7 @@ export async function PUT(req: Request) {
       return NextResponse.json(updatedSettings);
     }
 
+    // 2. 相手からの返信の手動記録
     if (body.isUserReply && body.userReplyText) {
       const existingInquiry = await prisma.inquiry.findUnique({
         where: { id: body.id },
@@ -103,21 +107,10 @@ export async function PUT(req: Request) {
         },
       });
 
-      try {
-        await prisma.announcement.create({
-          data: {
-            title: `【返信受信】${existingInquiry?.name || 'お客様'}より返信が届きました`,
-            category: '重要',
-            content: `返信内容:\n${body.userReplyText}`,
-          },
-        });
-      } catch (noticeErr) {
-        console.warn('お知らせ自動生成エラー:', noticeErr);
-      }
-
       return NextResponse.json(updatedInquiry);
     }
 
+    // 3. 管理者からのメール返信送信 ＆ 履歴保存
     if (body.replyText && body.email) {
       const existingInquiry = await prisma.inquiry.findUnique({
         where: { id: body.id },
@@ -126,42 +119,59 @@ export async function PUT(req: Request) {
       const currentMessage = existingInquiry?.message || '';
       const updatedMessage = `${currentMessage}\n\n---ADMIN_REPLY---\n${body.replyText}`;
 
-      let adminEmail = process.env.SMTP_USER || 'admin@example.com';
+      // ★ データベース（Settingテーブル）から最新の認証情報を取得
+      let smtpUser = process.env.SMTP_USER || '';
+      let smtpPass = process.env.SMTP_PASS || '';
+      let contactEmail = smtpUser;
+
       try {
-        const siteSetting = await prisma.setting.findFirst({
-          select: { contactEmail: true },
-        });
-        if (siteSetting?.contactEmail) {
-          adminEmail = siteSetting.contactEmail;
+        const siteSetting = await prisma.setting.findFirst();
+        if (siteSetting) {
+          if (siteSetting.smtpUser) smtpUser = siteSetting.smtpUser;
+          if (siteSetting.smtpPass) smtpPass = siteSetting.smtpPass;
+          if (siteSetting.contactEmail) contactEmail = siteSetting.contactEmail;
         }
       } catch (e) {
-        console.warn('基本設定のメールアドレス取得をスキップしました:', e);
+        console.warn('Settingテーブル取得スキップ:', e);
       }
 
-      if (process.env.SMTP_USER && process.env.SMTP_PASS) {
-        try {
-          const transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST || 'smtp.gmail.com',
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: false,
-            auth: {
-              user: process.env.SMTP_USER,
-              pass: process.env.SMTP_PASS,
-            },
-          });
+      // 不要な空白やダブルクォーテーションを除去
+      smtpPass = (smtpPass || '').replace(/^["']|["']$/g, '').trim();
+      smtpUser = (smtpUser || '').trim();
 
-          await transporter.sendMail({
-            from: `"BeSmile 事務局" <${process.env.SMTP_USER}>`,
-            replyTo: adminEmail,
-            to: body.email,
-            subject: `【BeSmile】お問い合わせへのご返信`,
-            text: body.replyText,
-          });
-        } catch (mailError) {
-          console.error('実メール送信エラー（DBログ更新は継続）:', mailError);
-        }
+      if (!smtpUser || !smtpPass) {
+        return NextResponse.json(
+          { error: '基本設定で「送信用メールアドレス」と「Googleアプリパスワード」が設定されていません。' },
+          { status: 400 }
+        );
       }
 
+      // Nodemailer による Gmail 送信
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"BeSmile 事務局" <${smtpUser}>`,
+          replyTo: contactEmail || smtpUser,
+          to: body.email,
+          subject: `【BeSmile】お問い合わせへのご返信`,
+          text: body.replyText,
+        });
+      } catch (mailError: any) {
+        console.error('[MAIL ERROR] 実メール送信失敗:', mailError);
+        return NextResponse.json(
+          { error: `メール送信エラー: ${mailError.message || mailError}` },
+          { status: 500 }
+        );
+      }
+
+      // 送信成功時のみ DB 更新
       const updatedInquiry = await prisma.inquiry.update({
         where: { id: body.id },
         data: {
@@ -173,15 +183,16 @@ export async function PUT(req: Request) {
       return NextResponse.json(updatedInquiry);
     }
 
+    // 4. ステータス変更のみ
     const updatedInquiry = await prisma.inquiry.update({
       where: { id: body.id },
       data: { status: body.status },
     });
 
     return NextResponse.json(updatedInquiry);
-  } catch (error) {
+  } catch (error: any) {
     console.error('PUT Inquiry Error:', error);
-    return NextResponse.json({ error: '更新失敗' }, { status: 500 });
+    return NextResponse.json({ error: error.message || '更新失敗' }, { status: 500 });
   }
 }
 
