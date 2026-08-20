@@ -36,8 +36,8 @@ export default function SettingsPage() {
     const fetchData = async () => {
       try {
         const [resSettings, resPhotos] = await Promise.all([
-          fetch('/api/settings', { next: { revalidate: 60 } }),
-          fetch('/api/photos', { next: { revalidate: 60 } }),
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/photos', { cache: 'no-store' }),
         ]);
 
         if (resSettings.ok && isMounted) {
@@ -232,6 +232,18 @@ export default function SettingsPage() {
                   className="hidden"
                 />
               </label>
+            </div>
+
+            {/* ★ ファビコンの推奨仕様・注意書き */}
+            <div className="bg-[#FAF8F5] border border-gray-200/80 rounded-xl p-3 text-[11px] text-gray-500 space-y-1 max-w-md">
+              <div className="font-semibold text-gray-600 flex items-center gap-1">
+                <span>ℹ️</span> ファビコンの仕様・目安
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-gray-500 pl-0.5 leading-relaxed">
+                <li><strong>表示サイズ:</strong> ブラウザのタブ上では <strong>16×16px</strong> または <strong>32×32px</strong> の極小サイズで表示されます。</li>
+                <li><strong>推奨画像サイズ:</strong> <strong>正方形（1:1）</strong>、<code>32×32px</code> 〜 <code>512×512px</code>（PNG / ICO / SVG形式）。</li>
+                <li><strong>推奨ファイル容量:</strong> <strong>1MB以内</strong>（透過PNG推奨。細かすぎる図形よりシンプルなマークが綺麗に見えます）。</li>
+              </ul>
             </div>
           </div>
         </div>
