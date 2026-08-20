@@ -15,22 +15,25 @@ type PhotoItem = {
 
 const ITEMS_PER_PAGE = 5;
 
-// 画像の自動圧縮処理（★ GIF・SVG・1MB未満PNGはそのまま保持）
+// ★ 画像を約500KB以下に自動圧縮（最大長辺1200px・JPEG/WebP品質0.72）
 const compressImage = (file: File): Promise<string> => {
   return new Promise((resolve) => {
-    // 1. GIF アニメーション、SVG、1MB以下のPNGは圧縮せずそのまま維持
-    if (
-      file.type === 'image/gif' ||
-      file.type === 'image/svg+xml' ||
-      (file.size <= 1024 * 1024 && file.type === 'image/png')
-    ) {
+    // GIFアニメやSVGはそのまま維持
+    if (file.type === 'image/gif' || file.type === 'image/svg+xml') {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
       reader.readAsDataURL(file);
       return;
     }
 
-    // 2. 通常の静止画像（JPEG / PNG等）は Canvas で自動圧縮
+    // 既に500KB以下のPNGは透過保持のためそのまま
+    if (file.size <= 500 * 1024 && file.type === 'image/png') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
     const img = new window.Image();
     const url = URL.createObjectURL(file);
     img.src = url;
@@ -38,8 +41,8 @@ const compressImage = (file: File): Promise<string> => {
     img.onload = () => {
       URL.revokeObjectURL(url);
       const canvas = document.createElement('canvas');
-      const MAX_WIDTH = 1600;
-      const MAX_HEIGHT = 1600;
+      const MAX_WIDTH = 1200;
+      const MAX_HEIGHT = 1200;
       let width = img.width;
       let height = img.height;
 
@@ -60,8 +63,9 @@ const compressImage = (file: File): Promise<string> => {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(img, 0, 0, width, height);
+        // 品質0.72で500KB以下に自動軽量化
         const mimeType = file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
-        const compressedBase64 = canvas.toDataURL(mimeType, 0.82);
+        const compressedBase64 = canvas.toDataURL(mimeType, 0.72);
         resolve(compressedBase64);
       } else {
         const reader = new FileReader();
@@ -117,7 +121,7 @@ function PhotosContent() {
             ? 'gif'
             : 'image'),
         url: item.url,
-        size: item.size || '1.0 MB',
+        size: item.size || '0.5 MB',
         date: new Date(item.createdAt || Date.now())
           .toLocaleDateString('ja-JP', {
             year: 'numeric',
@@ -158,13 +162,7 @@ function PhotosContent() {
       const validFiles: File[] = [];
 
       for (const file of selected) {
-        // GIF・動画・音声は 5MB まで許容
-        const isLargeMedia =
-          file.type.startsWith('video/') ||
-          file.type.startsWith('audio/') ||
-          file.type === 'image/gif';
-        const limitMB = isLargeMedia ? 5 : 5;
-
+        const limitMB = 5;
         if (file.size > limitMB * 1024 * 1024) {
           alert(`「${file.name}」はサイズ制限（${limitMB}MB）を超えているため除外されました。`);
           continue;
@@ -211,9 +209,9 @@ function PhotosContent() {
           base64Url = await fileToBase64(file);
         } else if (file.type === 'image/gif') {
           mediaType = 'gif';
-          // ★ GIF は圧縮せずそのまま Base64 化
           base64Url = await fileToBase64(file);
         } else {
+          // 静止画は500KB以下へ圧縮
           base64Url = await compressImage(file);
         }
 
@@ -221,7 +219,7 @@ function PhotosContent() {
         const approxSizeMB = (
           (base64Url.length * (3 / 4)) /
           (1024 * 1024)
-        ).toFixed(1);
+        ).toFixed(2);
 
         await fetch('/api/photos', {
           method: 'POST',
@@ -376,9 +374,9 @@ function PhotosContent() {
             </button>
             <h2 className="text-xl font-bold text-gray-800">新規素材の追加</h2>
 
-            {/* 容量・自動圧縮のコンパクトな説明 */}
+            {/* 容量・自動圧縮の説明（500KB基準） */}
             <div className="bg-[#FAF8F5] border border-gray-200 rounded-lg p-2.5 text-[11px] text-gray-500 space-y-1">
-              <div>• <strong>静止画像:</strong> 1MB以内推奨（自動で最適化・圧縮）</div>
+              <div>• <strong>静止画像:</strong> 約500KB以下へ自動圧縮・最適化</div>
               <div>• <strong>GIF・動画・音声:</strong> 最大5MBまで対応（GIFアニメは圧縮せずそのまま維持）</div>
             </div>
 
@@ -405,7 +403,7 @@ function PhotosContent() {
                   {newPhotoFiles.map((f, idx) => (
                     <div key={idx} className="text-[11px] text-gray-700 truncate flex justify-between">
                       <span className="truncate">• {f.name}</span>
-                      <span className="text-gray-400 ml-2 flex-shrink-0">{(f.size / (1024 * 1024)).toFixed(1)} MB</span>
+                      <span className="text-gray-400 ml-2 flex-shrink-0">{(f.size / (1024 * 1024)).toFixed(2)} MB</span>
                     </div>
                   ))}
                 </div>
@@ -414,7 +412,7 @@ function PhotosContent() {
               {isUploading && (
                 <div className="space-y-1.5 text-center py-1">
                   <div className="text-xs font-bold text-gray-700">
-                    アップロード中... ({uploadProgress.current} / {uploadProgress.total})
+                    アップロード＆500KB最適化中... ({uploadProgress.current} / {uploadProgress.total})
                   </div>
                   <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
                     <div
