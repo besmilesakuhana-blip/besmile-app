@@ -15,7 +15,6 @@ export default function SettingsPage() {
 
   // 設定項目の状態管理
   const [siteTitle, setSiteTitle] = useState('BE SMILE');
-  const [siteUrl, setSiteUrl] = useState('https://besmile.example.com');
   const [adminEmail, setAdminEmail] = useState('admin@example.com');
   const [faviconUrl, setFaviconUrl] = useState<string>('/icons/top.png');
 
@@ -46,7 +45,6 @@ export default function SettingsPage() {
           if (dataSettings) {
             const email = dataSettings.contactEmail || 'admin@example.com';
             setSiteTitle(dataSettings.siteTitle || 'BE SMILE');
-            setSiteUrl(dataSettings.siteUrl || 'https://besmile.example.com');
             setAdminEmail(email);
             setFaviconUrl(dataSettings.mainImageUrl || '/icons/top.png');
             setSmtpUser(dataSettings.smtpUser || email);
@@ -125,7 +123,6 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           siteTitle,
-          siteUrl,
           contactEmail: adminEmail,
           mainImageUrl: faviconUrl,
           smtpUser: adminEmail,
@@ -236,22 +233,6 @@ export default function SettingsPage() {
                 />
               </label>
             </div>
-          </div>
-        </div>
-
-        {/* URL */}
-        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
-          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
-            URL
-          </label>
-          <div className="md:col-span-8">
-            <input
-              type="url"
-              value={siteUrl}
-              onChange={(e) => setSiteUrl(e.target.value)}
-              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm"
-              placeholder="https://..."
-            />
           </div>
         </div>
 
