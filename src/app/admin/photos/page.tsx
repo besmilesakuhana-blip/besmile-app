@@ -15,6 +15,66 @@ type PhotoItem = {
 
 const ITEMS_PER_PAGE = 5;
 
+// 画像の自動圧縮（最大長辺1600px・WebP/JPEG品質0.82・1MB以内に収める処理）
+const compressImage = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    // 1MB未満かつPNG等の特定画像はそのままBase64化
+    if (file.size <= 1024 * 1024 && file.type === 'image/png') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const img = new window.Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 1600;
+      const MAX_HEIGHT = 1600;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width = Math.round((width * MAX_HEIGHT) / height);
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        // JPEG/WebPで自動軽量化
+        const mimeType = file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+        const compressedBase64 = canvas.toDataURL(mimeType, 0.82);
+        resolve(compressedBase64);
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    };
+  });
+};
+
 function PhotosContent() {
   const searchParams = useSearchParams();
   const targetId = searchParams.get('id');
@@ -88,7 +148,21 @@ function PhotosContent() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setNewPhotoFile(Array.from(e.target.files));
+      const selected = Array.from(e.target.files);
+      const validFiles: File[] = [];
+
+      for (const file of selected) {
+        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/');
+        const limitMB = isMedia ? 5 : 5; // 画像はクライアント側で1MB以下に圧縮するため5MBまで受付可能
+
+        if (file.size > limitMB * 1024 * 1024) {
+          alert(`「${file.name}」はサイズ制限（${limitMB}MB）を超えているため除外されました。`);
+          continue;
+        }
+        validFiles.push(file);
+      }
+
+      setNewPhotoFile(validFiles);
     }
   };
 
@@ -117,12 +191,24 @@ function PhotosContent() {
         setUploadProgress({ current: i + 1, total: newPhotoFiles.length });
 
         let mediaType = 'image';
-        if (file.type.startsWith('video/')) mediaType = 'video';
-        else if (file.type.startsWith('audio/')) mediaType = 'audio';
+        let base64Url = '';
 
-        const base64Url = await fileToBase64(file);
+        if (file.type.startsWith('video/')) {
+          mediaType = 'video';
+          base64Url = await fileToBase64(file);
+        } else if (file.type.startsWith('audio/')) {
+          mediaType = 'audio';
+          base64Url = await fileToBase64(file);
+        } else {
+          // 画像は自動圧縮して軽量Base64化
+          base64Url = await compressImage(file);
+        }
+
         const fileName = file.name.replace(/\.[^/.]+$/, '');
-        const fileSizeStr = `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+        const approxSizeMB = (
+          (base64Url.length * (3 / 4)) /
+          (1024 * 1024)
+        ).toFixed(1);
 
         await fetch('/api/photos', {
           method: 'POST',
@@ -131,7 +217,7 @@ function PhotosContent() {
             name: fileName,
             url: base64Url,
             category: mediaType,
-            size: fileSizeStr,
+            size: `${approxSizeMB} MB`,
           }),
         });
       }
@@ -261,7 +347,7 @@ function PhotosContent() {
 
       {isAddModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-5 relative">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
             <button
               onClick={() => !isUploading && setIsAddModalOpen(false)}
               disabled={isUploading}
@@ -269,11 +355,17 @@ function PhotosContent() {
             >
               ✕
             </button>
-            <h2 className="text-xl font-bold text-gray-800">新規素材の追加（複数選択可）</h2>
+            <h2 className="text-xl font-bold text-gray-800">新規素材の追加</h2>
+
+            {/* 容量・自動圧縮のコンパクトな説明 */}
+            <div className="bg-[#FAF8F5] border border-gray-200 rounded-lg p-2.5 text-[11px] text-gray-500 space-y-1">
+              <div>• <strong>画像:</strong> 1MB以内推奨（自動で最適化・圧縮）</div>
+              <div>• <strong>動画・音声:</strong> 最大5MBまで対応（MP4 / MP3等）</div>
+            </div>
 
             <form onSubmit={handleAddPhotos} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-xs font-bold text-gray-700 mb-1">
                   ファイル選択（複数選択OK）
                 </label>
                 <input
@@ -282,30 +374,30 @@ function PhotosContent() {
                   accept="image/*,video/*,audio/*"
                   onChange={handleFileChange}
                   disabled={isUploading}
-                  className="w-full text-sm text-gray-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-[#DAE6DC] file:text-gray-800 cursor-pointer disabled:opacity-50"
+                  className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#DAE6DC] file:text-gray-800 cursor-pointer disabled:opacity-50"
                 />
               </div>
 
               {newPhotoFiles.length > 0 && (
-                <div className="p-3 bg-gray-50 border rounded-xl max-h-36 overflow-y-auto space-y-1">
-                  <div className="text-xs font-bold text-gray-600 border-b pb-1 mb-1">
-                    選択中のファイル ({newPhotoFiles.length}件):
+                <div className="p-2.5 bg-gray-50 border rounded-xl max-h-32 overflow-y-auto space-y-1">
+                  <div className="text-[11px] font-bold text-gray-600 border-b pb-1 mb-1">
+                    選択中 ({newPhotoFiles.length}件):
                   </div>
                   {newPhotoFiles.map((f, idx) => (
-                    <div key={idx} className="text-xs text-gray-700 truncate flex justify-between">
-                      <span>• {f.name}</span>
-                      <span className="text-gray-400 ml-2">{(f.size / (1024 * 1024)).toFixed(1)} MB</span>
+                    <div key={idx} className="text-[11px] text-gray-700 truncate flex justify-between">
+                      <span className="truncate">• {f.name}</span>
+                      <span className="text-gray-400 ml-2 flex-shrink-0">{(f.size / (1024 * 1024)).toFixed(1)} MB</span>
                     </div>
                   ))}
                 </div>
               )}
 
               {isUploading && (
-                <div className="space-y-2 text-center py-2">
-                  <div className="text-sm font-bold text-gray-700">
-                    アップロード中... ({uploadProgress.current} / {uploadProgress.total})
+                <div className="space-y-1.5 text-center py-1">
+                  <div className="text-xs font-bold text-gray-700">
+                    アップロード＆最適化中... ({uploadProgress.current} / {uploadProgress.total})
                   </div>
-                  <div className="w-full bg-gray-200 h-2.5 rounded-full overflow-hidden">
+                  <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
                     <div
                       className="bg-[#8fae94] h-full transition-all duration-200"
                       style={{
@@ -316,19 +408,19 @@ function PhotosContent() {
                 </div>
               )}
 
-              <div className="flex justify-end gap-3 pt-4 border-t">
+              <div className="flex justify-end gap-2 pt-3 border-t">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
                   disabled={isUploading}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-sm disabled:opacity-50"
+                  className="px-3.5 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-xs font-medium disabled:opacity-50"
                 >
                   キャンセル
                 </button>
                 <button
                   type="submit"
                   disabled={isUploading || newPhotoFiles.length === 0}
-                  className="px-5 py-2 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-semibold rounded-lg shadow-sm transition text-sm disabled:opacity-50"
+                  className="px-4 py-1.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-bold rounded-lg shadow-xs transition text-xs disabled:opacity-50"
                 >
                   {isUploading ? '保存中...' : `${newPhotoFiles.length > 0 ? `${newPhotoFiles.length}件を追加` : '追加する'}`}
                 </button>
