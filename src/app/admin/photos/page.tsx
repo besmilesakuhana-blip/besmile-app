@@ -15,17 +15,22 @@ type PhotoItem = {
 
 const ITEMS_PER_PAGE = 5;
 
-// 画像の自動圧縮（最大長辺1600px・WebP/JPEG品質0.82・1MB以内に収める処理）
+// 画像の自動圧縮処理（★ GIF・SVG・1MB未満PNGはそのまま保持）
 const compressImage = (file: File): Promise<string> => {
   return new Promise((resolve) => {
-    // 1MB未満かつPNG等の特定画像はそのままBase64化
-    if (file.size <= 1024 * 1024 && file.type === 'image/png') {
+    // 1. GIF アニメーション、SVG、1MB以下のPNGは圧縮せずそのまま維持
+    if (
+      file.type === 'image/gif' ||
+      file.type === 'image/svg+xml' ||
+      (file.size <= 1024 * 1024 && file.type === 'image/png')
+    ) {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
       reader.readAsDataURL(file);
       return;
     }
 
+    // 2. 通常の静止画像（JPEG / PNG等）は Canvas で自動圧縮
     const img = new window.Image();
     const url = URL.createObjectURL(file);
     img.src = url;
@@ -55,7 +60,6 @@ const compressImage = (file: File): Promise<string> => {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(img, 0, 0, width, height);
-        // JPEG/WebPで自動軽量化
         const mimeType = file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
         const compressedBase64 = canvas.toDataURL(mimeType, 0.82);
         resolve(compressedBase64);
@@ -109,6 +113,8 @@ function PhotosContent() {
             ? 'video'
             : item.url?.startsWith('data:audio') || item.url?.endsWith('.mp3')
             ? 'audio'
+            : item.url?.startsWith('data:image/gif') || item.url?.endsWith('.gif')
+            ? 'gif'
             : 'image'),
         url: item.url,
         size: item.size || '1.0 MB',
@@ -152,8 +158,12 @@ function PhotosContent() {
       const validFiles: File[] = [];
 
       for (const file of selected) {
-        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/');
-        const limitMB = isMedia ? 5 : 5; // 画像はクライアント側で1MB以下に圧縮するため5MBまで受付可能
+        // GIF・動画・音声は 5MB まで許容
+        const isLargeMedia =
+          file.type.startsWith('video/') ||
+          file.type.startsWith('audio/') ||
+          file.type === 'image/gif';
+        const limitMB = isLargeMedia ? 5 : 5;
 
         if (file.size > limitMB * 1024 * 1024) {
           alert(`「${file.name}」はサイズ制限（${limitMB}MB）を超えているため除外されました。`);
@@ -199,8 +209,11 @@ function PhotosContent() {
         } else if (file.type.startsWith('audio/')) {
           mediaType = 'audio';
           base64Url = await fileToBase64(file);
+        } else if (file.type === 'image/gif') {
+          mediaType = 'gif';
+          // ★ GIF は圧縮せずそのまま Base64 化
+          base64Url = await fileToBase64(file);
         } else {
-          // 画像は自動圧縮して軽量Base64化
           base64Url = await compressImage(file);
         }
 
@@ -297,7 +310,7 @@ function PhotosContent() {
               >
                 <div className="col-span-8 md:col-span-9 flex items-center gap-6">
                   <div className="w-20 h-20 bg-gray-100 border border-gray-300 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
-                    {photo.type === 'image' && (
+                    {(photo.type === 'image' || photo.type === 'gif') && (
                       <img src={photo.url} alt={photo.name} className="w-full h-full object-cover" />
                     )}
                     {photo.type === 'video' && (
@@ -319,7 +332,13 @@ function PhotosContent() {
                       {photo.name}
                     </span>
                     <span className="text-xs text-gray-400 uppercase font-semibold">
-                      {photo.type === 'image' ? '画像' : photo.type === 'video' ? '動画' : '音楽'}
+                      {photo.type === 'gif'
+                        ? 'GIFアニメ'
+                        : photo.type === 'image'
+                        ? '画像'
+                        : photo.type === 'video'
+                        ? '動画'
+                        : '音楽'}
                     </span>
                   </div>
                 </div>
@@ -359,8 +378,8 @@ function PhotosContent() {
 
             {/* 容量・自動圧縮のコンパクトな説明 */}
             <div className="bg-[#FAF8F5] border border-gray-200 rounded-lg p-2.5 text-[11px] text-gray-500 space-y-1">
-              <div>• <strong>画像:</strong> 1MB以内推奨（自動で最適化・圧縮）</div>
-              <div>• <strong>動画・音声:</strong> 最大5MBまで対応（MP4 / MP3等）</div>
+              <div>• <strong>静止画像:</strong> 1MB以内推奨（自動で最適化・圧縮）</div>
+              <div>• <strong>GIF・動画・音声:</strong> 最大5MBまで対応（GIFアニメは圧縮せずそのまま維持）</div>
             </div>
 
             <form onSubmit={handleAddPhotos} className="space-y-4">
@@ -395,7 +414,7 @@ function PhotosContent() {
               {isUploading && (
                 <div className="space-y-1.5 text-center py-1">
                   <div className="text-xs font-bold text-gray-700">
-                    アップロード＆最適化中... ({uploadProgress.current} / {uploadProgress.total})
+                    アップロード中... ({uploadProgress.current} / {uploadProgress.total})
                   </div>
                   <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
                     <div
@@ -437,7 +456,7 @@ function PhotosContent() {
             <h2 className="text-xl font-bold text-gray-800">素材の詳細・プレビュー</h2>
 
             <div className="w-full h-52 bg-gray-100 border rounded-xl flex items-center justify-center overflow-hidden">
-              {selectedPhoto.type === 'image' && (
+              {(selectedPhoto.type === 'image' || selectedPhoto.type === 'gif') && (
                 <img src={selectedPhoto.url} alt={selectedPhoto.name} className="w-full h-full object-contain" />
               )}
               {selectedPhoto.type === 'video' && (
