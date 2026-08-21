@@ -442,10 +442,16 @@ function WorksContent() {
                   <textarea value={formDescription} onChange={(e) => setFormDescription(e.target.value)} placeholder="作品の概要やコンセプトを入力してください。" rows={4} className="w-full p-2.5 border border-gray-300 rounded-lg text-sm" />
                 </div>
 
-                {/* メイン画像 */}
-                <div className="border-t pt-4">
-                  <label className="block text-sm font-bold text-gray-800 mb-2">メイン画像（「写真」から選択）</label>
-                  <div className="flex items-center gap-4">
+                {/* ★ メイン画像（比率の案内文付き） */}
+                <div className="border-t pt-4 space-y-1">
+                  <div>
+                    <label className="block text-sm font-bold text-gray-800">メイン画像（「写真」から選択）</label>
+                    <p className="text-[11px] text-gray-500 leading-relaxed mt-0.5">
+                      推奨比率: <strong>横長（16:9 または 4:3）</strong><br />
+                      ※サイト上では横長枠の中に全体が収まるよう自動調整されます（左右の余白が出にくく綺麗に収まります）
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4 pt-1">
                     <div className="w-20 h-20 bg-gray-100 border border-gray-300 rounded-lg flex items-center justify-center overflow-hidden flex-shrink-0">
                       {selectedPhotoUrl ? (
                         isVideoUrl(selectedPhotoUrl) ? (
@@ -464,10 +470,12 @@ function WorksContent() {
                 {/* 詳細用サブ画像 */}
                 <div className="border-t pt-4 space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="block text-sm font-bold text-gray-800">
-                      詳細用サブ画像（複数追加可能）
-                    </label>
-                    <span className="text-xs text-gray-400">作品詳細モーダルのみに表示されます</span>
+                    <div>
+                      <label className="block text-sm font-bold text-gray-800">
+                        詳細用サブ画像（複数追加可能）
+                      </label>
+                      <span className="text-xs text-gray-400">作品詳細モーダルのみに表示されます（比率制限なし）</span>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-4 gap-3 pt-1">
