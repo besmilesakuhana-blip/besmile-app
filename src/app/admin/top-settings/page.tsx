@@ -347,7 +347,7 @@ export default function TopSettingsPage() {
 
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-1">
             {topImages.map((url, idx) => {
-              const labels = ['1. WEB', '2. 動画', '3. DTP', '4. イラスト', '5. Other'];
+              /*const labels = ['1. WEB', '2. 動画', '3. DTP', '4. イラスト', '5. Other'];*/
               return (
                 <div key={idx} className="space-y-1">
                   <span className="text-[10px] font-bold text-gray-500 block text-center">
