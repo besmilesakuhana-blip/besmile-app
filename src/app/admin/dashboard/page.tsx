@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 
@@ -67,7 +67,7 @@ export default function DashboardPage() {
     try {
       const fetchOption: RequestInit = forceRefresh
         ? { cache: 'reload' }
-        : { next: { revalidate: 60 } };
+        : { cache: 'no-store' };
 
       const [resAnalytics, resAnnouncements] = await Promise.all([
         fetch('/api/analytics', fetchOption),
@@ -108,6 +108,11 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchDashboardData();
   }, []);
+
+  // ★ 最新3件のみを確実に抽出
+  const latestThreeAnnouncements = useMemo(() => {
+    return announcements.slice(0, 3);
+  }, [announcements]);
 
   const handleOpenNoticeModal = (notice: Announcement) => {
     setSelectedNotice(notice);
@@ -361,7 +366,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* 3. お知らせ（★ 表側は最新3件のみ表示 ★） */}
+      {/* 3. お知らせ（★ 常に最新3件のみ表示 ★） */}
       <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -387,11 +392,10 @@ export default function DashboardPage() {
         <div className="space-y-3">
           {isLoading ? (
             <p className="text-sm text-gray-400 py-4 text-center">読み込み中...</p>
-          ) : announcements.length === 0 ? (
+          ) : latestThreeAnnouncements.length === 0 ? (
             <p className="text-sm text-gray-400 py-4 text-center">現在お知らせはありません。</p>
           ) : (
-            /* 最新3件のみ表示 */
-            announcements.slice(0, 3).map((item) => (
+            latestThreeAnnouncements.map((item) => (
               <div
                 key={item.id}
                 onClick={() => handleOpenNoticeModal(item)}
@@ -587,7 +591,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ベルアイコン用 全件お知らせモーダル（全件一覧） */}
+      {/* ベルアイコン用 全件お知らせモーダル */}
       {isAllNoticeModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5 relative">
