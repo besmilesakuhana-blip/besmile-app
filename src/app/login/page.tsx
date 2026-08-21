@@ -1,14 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,12 +26,10 @@ export default function LoginPage() {
         throw new Error(data.error || 'ログインに失敗しました');
       }
 
-      // ログイン成功したら管理画面へリダイレクト
-      router.push('/admin'); // ※実際の管理画面のURLに合わせて変更してください
-      router.refresh();
+      // ★ 認証Cookieを確実に同期させ、最新データをクリーンに読み込むため完全遷移を実行
+      window.location.href = '/admin';
     } catch (err: any) {
       setError(err.message);
-    } finally {
       setIsLoading(false);
     }
   };
