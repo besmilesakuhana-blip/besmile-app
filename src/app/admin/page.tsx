@@ -80,7 +80,7 @@ export default function DashboardPage() {
 
   const fetchAnnouncements = async () => {
     try {
-      const res = await fetch('/api/announcements');
+      const res = await fetch('/api/announcements', { cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to fetch');
       const data = await res.json();
 
@@ -364,7 +364,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* 3. お知らせ */}
+      {/* 3. お知らせ（★ 最新3件のみ表示 ★） */}
       <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -372,7 +372,7 @@ export default function DashboardPage() {
             <button
               onClick={() => setIsAllNoticeModalOpen(true)}
               title="お知らせの詳しい一覧をみる"
-              className="p-1 hover:bg-gray-100 rounded-lg transition-transform active:scale-95"
+              className="p-1 hover:bg-gray-100 rounded-lg transition-transform active:scale-95 cursor-pointer"
             >
               <Image src="/icons/notice.png" alt="お知らせベル" width={32} height={32} className="object-contain" />
             </button>
@@ -393,21 +393,22 @@ export default function DashboardPage() {
           ) : announcements.length === 0 ? (
             <p className="text-sm text-gray-400 py-4 text-center">現在お知らせはありません。</p>
           ) : (
-            announcements.map((item) => (
+            /* ★ slice(0, 3) で常に最新3件のみを表示 */
+            announcements.slice(0, 3).map((item) => (
               <div
                 key={item.id}
                 onClick={() => handleOpenNoticeModal(item)}
                 className="p-4 bg-gray-50/80 hover:bg-gray-100 rounded-xl cursor-pointer transition flex items-center justify-between text-gray-800 font-medium text-sm"
               >
-                <span>{item.title}</span>
-                <span className="text-xs text-gray-400 font-mono">→ 詳細</span>
+                <span className="truncate pr-4">{item.title}</span>
+                <span className="text-xs text-gray-400 font-mono flex-shrink-0">→ 詳細</span>
               </div>
             ))
           )}
         </div>
       </section>
 
-      {/* モーダル群 */}
+      {/* 新規作成モーダル */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-5 relative">
@@ -588,6 +589,7 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* ベルアイコン用 全件お知らせモーダル */}
       {isAllNoticeModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5 relative">
