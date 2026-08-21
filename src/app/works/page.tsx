@@ -29,7 +29,7 @@ type PhotoItem = {
 
 const categories = ['動画', 'DTP', 'イラスト', 'WEB', 'Other'];
 
-// 説明文とサブ画像データの分離ヘパー関数
+// 説明文とサブ画像データの分離ヘルパー関数
 const parseWorkDescription = (rawDescription: string) => {
   if (!rawDescription) return { description: '', subImages: [] };
 
@@ -406,13 +406,20 @@ export default function AdminWorksPage() {
                     />
                   </div>
 
-                  {/* ★ メイン画像設定 */}
+                  {/* ★ メイン画像設定（比率ガイド付き） */}
                   <div className="space-y-2 pt-2 border-t">
-                    <label className="block text-xs font-bold text-gray-700">
-                      メイン画像（一覧・サムネイル用）
-                    </label>
-                    <div className="flex items-center gap-4">
-                      <div className="w-24 h-20 bg-gray-50 rounded-xl overflow-hidden border flex items-center justify-center p-2">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700">
+                        メイン画像（一覧・サムネイル用）
+                      </label>
+                      <p className="text-[11px] text-gray-500 mt-0.5 leading-relaxed">
+                        推奨比率: <strong>横長（16:9 または 4:3）</strong><br />
+                        ※サイト上では横長枠の中に全体が収まるよう自動調整（左右余白なしで綺麗に収まります）
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-4 pt-1">
+                      <div className="w-28 h-20 bg-gray-50 rounded-xl overflow-hidden border flex items-center justify-center p-1.5">
                         <img
                           src={imageUrl || '/icons/works.png'}
                           alt="メイン画像"
@@ -429,13 +436,15 @@ export default function AdminWorksPage() {
                     </div>
                   </div>
 
-                  {/* ★★★ サブ画像（複数管理）設定 ★★★ */}
+                  {/* ★ サブ画像設定 */}
                   <div className="space-y-3 pt-4 border-t">
                     <div className="flex items-center justify-between">
-                      <label className="block text-xs font-bold text-gray-700">
-                        サブ画像・詳細用画像（複数選択可）
-                      </label>
-                      <span className="text-xs text-gray-400">詳細ページだけに表示されます</span>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-700">
+                          サブ画像・詳細用画像（複数選択可）
+                        </label>
+                        <p className="text-[11px] text-gray-400">詳細モーダルでのみ表示されます（比率制限なし）</p>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-4 gap-3">

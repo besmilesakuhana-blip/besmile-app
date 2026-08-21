@@ -26248,3 +26248,5505 @@ export async function DELETE(request: Request) {
 ### 全体総括
 
 アプリ全体の「全件取得（`findMany`）」「不要カラム（Base64・パスワード等）の取得」「不要な `no-store`」の最適化が完了しました。これにより、Neon の無料枠（5GB/月）内での安定稼働が可能となります。
+
+
+
+
+
+
+
+
+
+本番公開（Vercel デプロイ）と管理画面の各種エラー解消、本当にお疲れ様でした！
+今回対応したすべての内容と修正コードを体系的にまとめました。今後の保守や確認用のリファレンスとしてご活用ください。
+
+---
+
+# 📋 BeSmile アプリ 本番移行・エラー修正まとめ
+
+---
+
+## 1. 発生していた課題と解決の全体像
+
+| 分類 | 発生していた問題 | 原因 | 解決策 |
+| --- | --- | --- | --- |
+| **ビルド** | `useSearchParams() should be wrapped in a suspense boundary` | Next.js の本番ビルド時、URLクエリを扱うクライアント側コンポーネントに `<Suspense>` が未設定 | 各該当ページを `Content` コンポーネントに分離し、`<Suspense>` でラップ |
+| **デプロイ** | Vercel で Prisma クライアントが見つからない | ビルドコマンドが `next build` のみだった | `scripts.build` を `prisma generate && next build` に変更 |
+| **DB同期** | テーブル不一致・データ保存エラー | Vercel の接続先 Neon DB と手元の `.env` の接続先が食い違っていた | `.env` の `DATABASE_URL` を本番用に統一し、`npx prisma db push` を実行 |
+| **ログイン** | 管理者ログインで 401 エラー | `/api/auth/login` が参照する `AdminUser` テーブルにレコードが存在しなかった | コマンドから `AdminUser` テーブルへハッシュ化パスワードを直接作成 |
+| **設定保存** | `/api/settings` 保存時に 500 エラー | Vercel（サーバーレス）環境で `.env.local` への `fs` ファイル書き込みを実行していた | ファイル書き込みを撤廃し、Neon DB の `Setting` テーブルに直接保存する構成へ移行 |
+| **画面反映** | 管理画面で保存した内容が本番サイトに反映されない | `src/app/page.tsx` に `revalidate = 60` のキャッシュが効いていた | `export const dynamic = 'force-dynamic'` を指定し、常に最新 DB データを取得 |
+
+---
+
+## 2. 修正した主要コード一覧
+
+### ① `src/app/page.tsx`（トップページの即時反映化）
+
+```tsx
+import Link from 'next/link';
+import Script from 'next/script';
+import { prisma } from '@/lib/prisma';
+import ContactForm from '@/app/components/ContactForm';
+import AnalyticsTracker from '@/app/components/AnalyticsTracker';
+
+// 常に最新のデータベース情報を取得するように設定
+export const dynamic = 'force-dynamic';
+
+const isVideoUrl = (url: string) => {
+  if (typeof url !== 'string' || !url) return false;
+  if (url.startsWith('data:video/')) return true;
+  const cleanUrl = url.split('?')[0].toLowerCase();
+  return /\.(mp4|webm|mov|m4v|ogv)$/.test(cleanUrl);
+};
+
+export default async function HomePage() {
+  let topSetting = null;
+  let recentWorks: any[] = [];
+
+  try {
+    topSetting = await prisma.topSetting.findUnique({
+      where: { id: 'top_settings' },
+    });
+
+    recentWorks = await prisma.work.findMany({
+      where: { creatorId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 4,
+      select: {
+        id: true,
+        title: true,
+        category: true,
+        imageUrl: true,
+        creatorId: true,
+        creator: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+  } catch (error) {
+    console.error('データ取得エラー:', error);
+  }
+
+  const heroTitle = topSetting?.heroTitle || 'クリエイターとして働く。\n企業の力になる。';
+  const leadDescription = topSetting?.aboutDescription || 'BeSmileは、WEB制作・動画・DTP・イラスト・Other（3D、ゲーム、音源など）を行うクリエイター特化型の就労継続支援A型事業所です。';
+
+  let headerLogoType = 'text';
+  let footerLogoType = 'text';
+  let headerLogoText = 'BeSmile';
+  let instagramUrl = 'https://www.instagram.com/besmile_higashimikuni/?hl=ja';
+  let twitterUrl = 'https://x.com/bsma13a';
+
+  let categoryCounts = {
+    web: 5,
+    movie: 5,
+    dtp: 3,
+    illust: 10,
+    other: 5,
+    dateNote: '※2026年7月付',
+  };
+
+  if (topSetting?.heroSubtitle) {
+    try {
+      const parsed = JSON.parse(topSetting.heroSubtitle);
+      headerLogoType = parsed.headerLogoType || 'text';
+      footerLogoType = parsed.footerLogoType || 'text';
+      headerLogoText = parsed.headerLogoText || 'BeSmile';
+
+      if (parsed.instagramUrl) instagramUrl = parsed.instagramUrl;
+      if (parsed.twitterUrl) twitterUrl = parsed.twitterUrl;
+
+      if (parsed.web !== undefined || parsed.movie !== undefined) {
+        categoryCounts = { ...categoryCounts, ...parsed };
+      }
+    } catch (e) {}
+  }
+
+  const totalCreators =
+    Number(categoryCounts.web || 0) +
+    Number(categoryCounts.movie || 0) +
+    Number(categoryCounts.dtp || 0) +
+    Number(categoryCounts.illust || 0) +
+    Number(categoryCounts.other || 0);
+
+  const headerLogoUrl = topSetting?.aboutTitle || '/icons/top.png';
+  const footerLogoUrl = topSetting?.footerLogoUrl || '/icons/top.png';
+  const footerLogoText = topSetting?.footerLogoText || 'BeSmile';
+  const footerComment = topSetting?.aboutDescription || '動画・DTP・イラスト・WEB制作・Otherを行うクリエイター特化型の就労継続支援A型事業所';
+
+  let heroImages = [
+    '/assets/images/top-main-web.jpg',
+    '/assets/images/top-main-movie.jpg',
+    '/assets/images/top-main-dtp.jpg',
+    '/assets/images/top-main-illust.jpg',
+    '/assets/images/top-main-other.jpg',
+  ];
+  if (topSetting?.mainImageUrl) {
+    try {
+      const parsed = JSON.parse(topSetting.mainImageUrl);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        heroImages = parsed.concat(heroImages).slice(0, 5);
+      }
+    } catch (e) {}
+  }
+
+  return (
+    <>
+      <AnalyticsTracker />
+      <link rel="stylesheet" href="/assets/css/style.css" />
+
+      {/* ヘッダー */}
+      <header className="site-header" id="header">
+        <div className="header-inner">
+          <Link className="brand flex items-center gap-2" href="/" aria-label="BeSmile TOP">
+            {headerLogoType === 'image' ? (
+              <img src={headerLogoUrl} alt="ロゴ" className="h-10 object-contain" />
+            ) : (
+              <span className="brand-main">{headerLogoText}</span>
+            )}
+            <span className="brand-sub">Creative Support Team</span>
+          </Link>
+          <nav className="global-nav" aria-label="グローバルナビ">
+            <Link href="/artists">CREATOR</Link>
+            <a href="#contact">CONTACT</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        {/* HERO */}
+        <section className="hero section-bg">
+          <div className="container hero-grid hero-grid-revised">
+            <div className="hero-copy">
+              <p className="eyebrow">Creative Support Team</p>
+              <h1>
+                CREATORS<br />
+                WORK.<br />
+                <span>COMPANIES<br />GROW.</span>
+              </h1>
+
+              <h2 className="whitespace-pre-wrap">{heroTitle}</h2>
+              <p className="lead">{leadDescription}</p>
+
+              <div className="button-row">
+                <Link className="btn btn-dark" href="/artists">
+                  CREATORを見る <span>→</span>
+                </Link>
+                <a className="btn btn-blue" href="#contact">
+                  お問い合わせ <span>→</span>
+                </a>
+              </div>
+            </div>
+            <div className="hero-mosaic" aria-label="制作ジャンルイメージ">
+              <div className="mosaic-item mosaic-web"><img src={heroImages[0]} alt="WEB制作イメージ" /></div>
+              <div className="mosaic-item mosaic-movie"><img src={heroImages[1]} alt="動画制作イメージ" /></div>
+              <div className="mosaic-item mosaic-dtp"><img src={heroImages[2]} alt="DTP制作イメージ" /></div>
+              <div className="mosaic-item mosaic-illust"><img src={heroImages[3]} alt="イラスト制作イメージ" /></div>
+              <div className="mosaic-item mosaic-other"><img src={heroImages[4]} alt="Other制作イメージ" /></div>
+            </div>
+          </div>
+        </section>
+
+        {/* クリエイター数表示セクション */}
+        <section className="bg-white border-y border-gray-100 py-12">
+          <div className="container mx-auto px-4">
+            <div className="grid grid-cols-1 lg:grid-cols-12 items-center gap-8">
+              <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-gray-200 pb-6 lg:pb-0 lg:pr-8">
+                <h2 className="text-2xl md:text-3xl font-bold text-gray-900 mb-2">クリエイター数</h2>
+                <p className="text-sm font-medium text-gray-700">
+                  BeSmileには、<strong className="text-base text-gray-900 font-bold">{totalCreators}名</strong>のクリエイターが在籍しています。
+                </p>
+                {categoryCounts.dateNote && (
+                  <p className="text-xs text-gray-400 mt-1 font-mono">{categoryCounts.dateNote}</p>
+                )}
+              </div>
+
+              <div className="lg:col-span-8 grid grid-cols-2 md:grid-cols-5 gap-4 text-center">
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">WEB制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.web}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">動画制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.movie}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">DTP制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.dtp}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">イラスト制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.illust}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Other</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.other}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* PORTFOLIO */}
+        <section className="portfolio section-bg" id="portfolio">
+          <div className="container">
+            <div className="section-head split-head">
+              <div>
+                <p className="num">02</p>
+                <h2>PORTFOLIO</h2>
+                <p>在籍クリエイターの制作実績をご紹介します。</p>
+              </div>
+              <Link className="btn btn-outline" href="/artists">
+                すべてのCREATORを見る <span>→</span>
+              </Link>
+            </div>
+            <p className="news-label">新着情報</p>
+            <div className="work-grid">
+              {recentWorks.length > 0 ? (
+                recentWorks.map((work) => {
+                  const creatorName = work.creator?.name || '';
+                  const creatorId = work.creatorId || work.creator?.id;
+                  const imageUrl = work.imageUrl || '/icons/works.png';
+                  const hrefUrl = `/harenowa?id=${creatorId}`;
+
+                  return (
+                    <Link key={work.id} className="work-card group" href={hrefUrl}>
+                      <div
+                        className="w-full h-52 rounded-md p-3 flex items-center justify-center overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
+                        style={{ backgroundColor: '#C5C5C5' }}
+                      >
+                        {isVideoUrl(imageUrl) ? (
+                          <video src={imageUrl} autoPlay loop muted playsInline style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                        ) : (
+                          <img src={imageUrl} alt={work.title} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                        )}
+                      </div>
+                      <h3 className="mt-3 text-base font-bold text-gray-800 truncate">{creatorName}</h3>
+                      <p className="text-xs text-gray-500 font-medium truncate">
+                        {work.category || '制作実績'} / {work.title}
+                      </p>
+                    </Link>
+                  );
+                })
+              ) : (
+                <div className="col-span-full text-center py-12 text-gray-400">現在、表示できる制作実績はありません。</div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* CONTACT */}
+        <section className="contact" id="contact">
+          <div className="container contact-grid">
+            <div className="space-y-6">
+              <div className="section-head">
+                <p className="num">03</p>
+                <h2>CONTACT</h2>
+                <p>お仕事のご相談・お見積りなど、<br />お気軽にお問い合わせください。</p>
+              </div>
+
+              <div className="relative overflow-hidden w-full h-80 md:h-96">
+                <img
+                  src="/assets/images/top-contact-bg.jpg"
+                  alt="制作相談・見学受付中"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 p-6 flex items-center justify-center">
+                  <div className="bg-white/70 p-6 md:p-10 border border-blue-400/50 text-center max-w-sm w-full shadow-xs">
+                    <h3 className="text-lg md:text-xl font-bold text-gray-900 mb-3 leading-snug">
+                      制作相談・見学も受付中です
+                    </h3>
+                    <p className="text-xs md:text-sm text-gray-700 leading-relaxed">
+                      制作の流れやご相談内容に合わせて、担当スタッフが丁寧にご案内いたします。初めてのご依頼でも安心してお問い合わせください。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <ContactForm />
+          </div>
+        </section>
+      </main>
+
+      {/* フッター */}
+      <footer className="site-footer" id="footer">
+        <div className="container footer-grid items-center">
+          <div>
+            <Link className="footer-brand font-bold text-2xl" href="/">
+              {footerLogoType === 'image' ? (
+                <img src={footerLogoUrl} alt="フッターロゴ" className="h-10 object-contain mb-2" />
+              ) : (
+                footerLogoText
+              )}
+            </Link>
+            <p className="whitespace-pre-wrap mt-2">{footerComment}</p>
+            <a className="footer-url" href="https://sunplace-osaka.com/">https://sunplace-osaka.com/</a>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-6 md:gap-8 justify-end">
+            <nav className="footer-nav">
+              <Link href="/artists">CREATOR</Link>
+              <a href="#contact">CONTACT</a>
+            </nav>
+
+            <div className="flex items-center gap-3">
+              <a
+                href={instagramUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Instagram"
+                className="w-10 h-10 rounded-full border border-white flex items-center justify-center text-white hover:opacity-70 transition-opacity"
+              >
+                <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                </svg>
+              </a>
+
+              <a
+                href={twitterUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="X (Twitter)"
+                className="w-10 h-10 rounded-full border border-white flex items-center justify-center text-white hover:opacity-70 transition-opacity"
+              >
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+        <div className="container footer-bottom">
+          <small>© BeSmile All Rights Reserved.</small>
+        </div>
+      </footer>
+
+      <Script src="/assets/js/main.js" strategy="lazyOnload" />
+    </>
+  );
+}
+
+```
+
+---
+
+### ② `src/app/api/settings/route.ts`（基本設定 API のサーバーレス対応）
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+
+export const dynamic = 'force-dynamic';
+
+// GET: 設定情報の取得
+export async function GET() {
+  try {
+    let setting = await prisma.setting.findFirst();
+
+    if (!setting) {
+      setting = await prisma.setting.create({
+        data: {
+          id: 'site_settings',
+          siteTitle: 'BE SMILE',
+          contactEmail: 'admin@example.com',
+          mainImageUrl: '/icons/top.png',
+          smtpUser: process.env.SMTP_USER || '',
+          smtpPass: process.env.SMTP_PASS || '',
+        },
+      });
+    }
+
+    return NextResponse.json(setting, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+      },
+    });
+  } catch (error) {
+    console.error('GET Error:', error);
+    return NextResponse.json({ error: '取得エラー' }, { status: 500 });
+  }
+}
+
+// PUT: 設定情報の更新（データベースに直接保存）
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+    const { siteTitle, siteUrl, contactEmail, mainImageUrl, smtpUser, smtpPass } = body;
+
+    const updatedSetting = await prisma.setting.upsert({
+      where: { id: 'site_settings' },
+      update: {
+        siteTitle: siteTitle || 'BE SMILE',
+        siteUrl: siteUrl || '',
+        contactEmail: contactEmail || 'admin@example.com',
+        mainImageUrl: mainImageUrl || '/icons/top.png',
+        ...(smtpUser !== undefined ? { smtpUser } : {}),
+        ...(smtpPass !== undefined ? { smtpPass } : {}),
+      },
+      create: {
+        id: 'site_settings',
+        siteTitle: siteTitle || 'BE SMILE',
+        siteUrl: siteUrl || '',
+        contactEmail: contactEmail || 'admin@example.com',
+        mainImageUrl: mainImageUrl || '/icons/top.png',
+        smtpUser: smtpUser || '',
+        smtpPass: smtpPass || '',
+      },
+    });
+
+    return NextResponse.json({ success: true, setting: updatedSetting });
+  } catch (error) {
+    console.error('PUT Error:', error);
+    return NextResponse.json({ error: '保存エラー' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+### ③ `prisma/schema.prisma`（モデル定義の拡張）
+
+`Setting` モデルにサーバーレス用の保存カラム（`siteUrl`, `smtpUser`, `smtpPass`）を追加しました。
+
+```prisma
+model Setting {
+  id           String   @id @default("site_settings")
+  siteTitle    String   @default("BeSmile")
+  siteUrl      String?  @default("")
+  heroTitle    String   @default("笑顔とクリエイティブを届ける")
+  heroSubtitle String   @default("映像・グラフィック・Web制作のプロフェッショナル集団です。")
+  mainImageUrl String   @default("/icons/top.png")
+  contactEmail String   @default("info@besmile.example.com")
+  smtpUser     String?  @default("")
+  smtpPass     String?  @default("")
+  updatedAt    DateTime @updatedAt
+}
+
+```
+
+---
+
+### ④ `<Suspense>` ラップパターン（全クエリページ共通）
+
+`/artists`、`/admin/creators`、`/admin/works`、`/admin/accounts`、`/admin/photos`、`/harenowa` の各ページで以下の設計を統一適用しました。
+
+```tsx
+// 1. 実装ロジックを Content コンポーネントに分離
+function TargetPageContent() {
+  const searchParams = useSearchParams();
+  // ... ページ本体の処理
+}
+
+// 2. 親コンポーネントで Suspense を配置して export default
+export default function TargetPage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-400">読み込み中...</div>}>
+      <TargetPageContent />
+    </Suspense>
+  );
+}
+
+```
+
+---
+
+## 3. 今後役立つ保守コマンド集
+
+* **Prisma スキーマを変更した時:**
+```bash
+npx prisma db push
+
+```
+
+
+* **ローカルで本番ビルドを事前にテストする時:**
+```bash
+npm run build
+
+```
+
+
+* **変更を Vercel へ反映（プッシュ）する時:**
+```bash
+git add .
+git commit -m "コミットメッセージ"
+git push origin main
+
+```
+
+
+
+
+
+
+
+
+
+すべての機能が無事に稼働し、お問い合わせのメール送信・即時反映まで完了しました。
+
+本セッションで対応した「お問い合わせメール送信機能の修正」「リアルタイム反映化」「設定保存のサーバーレス対応」の全体まとめと最終コード一覧です。
+
+---
+
+### 今回対応した課題と解決策まとめ
+
+* **お問い合わせ返信メールが相手に届かない問題の解消**
+* **原因:** Vercel サーバー上にはローカル用の `.env.local` が存在せず、また API が DB（`Setting` テーブル）に保存された Gmail アプリパスワードを読み込んでいなかったため。
+* **解決策:** `src/app/api/inquiries/route.ts` 内で、データベースの `Setting` テーブルから最新の `smtpUser` と `smtpPass` を直接取得し、Nodemailer（Gmail サービス）経由で実送信する構造へ改修。
+
+
+* **管理画面の保存内容がトップページに即時反映されない問題の解消**
+* **原因:** `src/app/page.tsx` で 60 秒キャッシュ（`revalidate = 60`）が効いていた。
+* **解決策:** `export const dynamic = 'force-dynamic'` を指定し、アクセスごとに常に最新の DB データを直接取得するように変更。
+
+
+* **基本設定（`/api/settings`）保存時の 500 エラー解消**
+* **原因:** Vercel の読み取り専用環境で `.env.local` への `fs` ファイル書き込みを実行していた。
+* **解決策:** ファイル書き込みを撤廃し、Neon データベースの `Setting` モデルに `siteUrl`, `smtpUser`, `smtpPass` カラムを追加して DB 保存へ一本化。
+
+
+
+---
+
+### 主要コンポーネント・API の最終コード一覧
+
+**1. `src/app/api/inquiries/route.ts`（お問い合わせ返信 ＆ 実メール送信 API）**
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import nodemailer from 'nodemailer';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const type = searchParams.get('type');
+  const limit = Number(searchParams.get('limit')) || 50;
+
+  try {
+    if (type === 'settings') {
+      const settings = await prisma.topSetting.findUnique({
+        where: { id: 'inquiry_settings' },
+      });
+      return NextResponse.json(settings);
+    }
+
+    const inquiries = await prisma.inquiry.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        message: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    return NextResponse.json(inquiries);
+  } catch (error) {
+    console.error('GET Inquiries Error:', error);
+    return NextResponse.json({ error: 'データ取得エラー' }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { companyName, name, email, content } = body;
+
+    const fullMessage = companyName
+      ? `【会社名】${companyName}\n\n${content || ''}`
+      : content || '';
+
+    const newInquiry = await prisma.inquiry.create({
+      data: {
+        name: name || '匿名',
+        email: email || '',
+        message: fullMessage,
+        status: '未対応',
+      },
+    });
+
+    try {
+      await prisma.announcement.create({
+        data: {
+          title: `【お問い合わせ】${name || '匿名'}様より新しいメッセージが届きました`,
+          category: '重要',
+          content: `差出人: ${name || '匿名'} (${email || 'メールアドレスなし'})\n\n本文:\n${fullMessage}`,
+        },
+      });
+    } catch (noticeErr) {
+      console.warn('お知らせ自動生成エラー:', noticeErr);
+    }
+
+    return NextResponse.json(newInquiry, { status: 201 });
+  } catch (error) {
+    console.error('POST Inquiry Error:', error);
+    return NextResponse.json({ error: '送信失敗' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+
+    if (body.isSettings) {
+      const updatedSettings = await prisma.topSetting.upsert({
+        where: { id: 'inquiry_settings' },
+        update: { heroSubtitle: JSON.stringify(body.settingsData) },
+        create: {
+          id: 'inquiry_settings',
+          heroSubtitle: JSON.stringify(body.settingsData),
+        },
+      });
+      return NextResponse.json(updatedSettings);
+    }
+
+    if (body.isUserReply && body.userReplyText) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---USER_REPLY---\n${body.userReplyText}`;
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '未対応',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    if (body.replyText && body.email) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---ADMIN_REPLY---\n${body.replyText}`;
+
+      let smtpUser = process.env.SMTP_USER || '';
+      let smtpPass = process.env.SMTP_PASS || '';
+      let contactEmail = smtpUser;
+
+      try {
+        const siteSetting = await prisma.setting.findFirst();
+        if (siteSetting) {
+          if (siteSetting.smtpUser) smtpUser = siteSetting.smtpUser;
+          if (siteSetting.smtpPass) smtpPass = siteSetting.smtpPass;
+          if (siteSetting.contactEmail) contactEmail = siteSetting.contactEmail;
+        }
+      } catch (e) {
+        console.warn('Settingテーブル取得スキップ:', e);
+      }
+
+      smtpPass = (smtpPass || '').replace(/^["']|["']$/g, '').trim();
+      smtpUser = (smtpUser || '').trim();
+
+      if (!smtpUser || !smtpPass) {
+        return NextResponse.json(
+          { error: '基本設定で「送信用メールアドレス」と「Googleアプリパスワード」が設定されていません。' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"BeSmile 事務局" <${smtpUser}>`,
+          replyTo: contactEmail || smtpUser,
+          to: body.email,
+          subject: `【BeSmile】お問い合わせへのご返信`,
+          text: body.replyText,
+        });
+      } catch (mailError: any) {
+        console.error('[MAIL ERROR] 実メール送信失敗:', mailError);
+        return NextResponse.json(
+          { error: `メール送信エラー: ${mailError.message || mailError}` },
+          { status: 500 }
+        );
+      }
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '対応済み',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    const updatedInquiry = await prisma.inquiry.update({
+      where: { id: body.id },
+      data: { status: body.status },
+    });
+
+    return NextResponse.json(updatedInquiry);
+  } catch (error: any) {
+    console.error('PUT Inquiry Error:', error);
+    return NextResponse.json({ error: error.message || '更新失敗' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'IDが必要です' }, { status: 400 });
+  }
+
+  try {
+    await prisma.inquiry.delete({
+      where: { id },
+    });
+    return NextResponse.json({ message: '削除完了' });
+  } catch (error) {
+    console.error('DELETE Inquiry Error:', error);
+    return NextResponse.json({ error: '削除失敗' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+**2. `src/app/api/settings/route.ts`（基本設定 ＆ SMTP 認証情報の保存 API）**
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  try {
+    let setting = await prisma.setting.findFirst();
+
+    if (!setting) {
+      setting = await prisma.setting.create({
+        data: {
+          id: 'site_settings',
+          siteTitle: 'BE SMILE',
+          contactEmail: 'admin@example.com',
+          mainImageUrl: '/icons/top.png',
+          smtpUser: process.env.SMTP_USER || '',
+          smtpPass: process.env.SMTP_PASS || '',
+        },
+      });
+    }
+
+    return NextResponse.json(setting, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+      },
+    });
+  } catch (error) {
+    console.error('GET Error:', error);
+    return NextResponse.json({ error: '取得エラー' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+    const { siteTitle, siteUrl, contactEmail, mainImageUrl, smtpUser, smtpPass } = body;
+
+    const updatedSetting = await prisma.setting.upsert({
+      where: { id: 'site_settings' },
+      update: {
+        siteTitle: siteTitle || 'BE SMILE',
+        siteUrl: siteUrl || '',
+        contactEmail: contactEmail || 'admin@example.com',
+        mainImageUrl: mainImageUrl || '/icons/top.png',
+        ...(smtpUser !== undefined ? { smtpUser } : {}),
+        ...(smtpPass !== undefined ? { smtpPass } : {}),
+      },
+      create: {
+        id: 'site_settings',
+        siteTitle: siteTitle || 'BE SMILE',
+        siteUrl: siteUrl || '',
+        contactEmail: contactEmail || 'admin@example.com',
+        mainImageUrl: mainImageUrl || '/icons/top.png',
+        smtpUser: smtpUser || '',
+        smtpPass: smtpPass || '',
+      },
+    });
+
+    return NextResponse.json({ success: true, setting: updatedSetting });
+  } catch (error) {
+    console.error('PUT Error:', error);
+    return NextResponse.json({ error: '保存エラー' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+**3. `prisma/schema.prisma`（Setting モデル定義）**
+
+```prisma
+model Setting {
+  id           String   @id @default("site_settings")
+  siteTitle    String   @default("BeSmile")
+  siteUrl      String?  @default("")
+  heroTitle    String   @default("笑顔とクリエイティブを届ける")
+  heroSubtitle String   @default("映像・グラフィック・Web制作のプロフェッショナル集団です。")
+  mainImageUrl String   @default("/icons/top.png")
+  contactEmail String   @default("info@besmile.example.com")
+  smtpUser     String?  @default("")
+  smtpPass     String?  @default("")
+  updatedAt    DateTime @updatedAt
+}
+
+```
+
+---
+
+### 今後の運用ルール
+
+* **Gmail アプリパスワードを変更した場合:** 管理画面の「基本設定」からパスワードを上書き保存するだけで即座に本番環境へ反映されます。
+* **サイト情報・トップページ文面の変更:** 管理画面で保存後、本番サイトを再読み込みすれば即時反映されます。
+
+
+
+
+
+
+
+
+
+
+本セッションで実施したすべての修正・機能改善の内容を、最新のコードと一緒に体系的にまとめました。
+
+---
+
+# 🚀 BeSmile アプリ 本番公開＆全機能改修まとめ
+
+---
+
+## 1. 実施した改修一覧と目的
+
+* **Next.js 本番ビルド対応（Suspense ラップ）**
+* `useSearchParams()` を使用する各ページでビルドエラーが発生していたため、`<Suspense>` でラップする構造に分離・統一。
+
+
+* **初期管理者アカウントの復旧**
+* 認証先テーブルである `AdminUser` に、bcrypt ハッシュ化した管理者パスワード（ID: `admin@example.com` / PW: `admin`）を直接生成・同期。
+
+
+* **サーバーレス（Vercel）対応の基本設定 API 改修**
+* `.env.local` への `fs` ファイル書き込み（500 エラーの原因）を撤廃し、Neon DB の `Setting` テーブルへ直接保存する設計に変更。
+* 「URL」入力項目を削除し、タイトル・ファビコン・メール設定に特化。
+
+
+* **トップページおよびサイト全体の即時反映化**
+* キャッシュ（`revalidate = 60`）を外し、`export const dynamic = 'force-dynamic'` を適用して DB の最新状態を常に即座にレンダリング。
+
+
+* **お問い合わせ返信メール送信機能（Gmail SMTP）の実装**
+* 管理画面の「基本設定」で保存された Gmail と Google アプリパスワードを DB から取得し、Nodemailer 経由で実送信・相手のメールボックスに届くように改修。
+
+
+
+---
+
+## 2. 確定版コード一覧
+
+### ① 基本設定画面（URL入力欄削除済み）
+
+`src/app/admin/settings/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect } from 'react';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+
+type PhotoLibraryItem = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export default function SettingsPage() {
+  const router = useRouter();
+
+  const [siteTitle, setSiteTitle] = useState('BE SMILE');
+  const [adminEmail, setAdminEmail] = useState('admin@example.com');
+  const [faviconUrl, setFaviconUrl] = useState<string>('/icons/top.png');
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+
+  const [photoLibrary, setPhotoLibrary] = useState<PhotoLibraryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchData = async () => {
+      try {
+        const [resSettings, resPhotos] = await Promise.all([
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/photos', { cache: 'no-store' }),
+        ]);
+
+        if (resSettings.ok && isMounted) {
+          const dataSettings = await resSettings.json();
+          if (dataSettings) {
+            const email = dataSettings.contactEmail || 'admin@example.com';
+            setSiteTitle(dataSettings.siteTitle || 'BE SMILE');
+            setAdminEmail(email);
+            setFaviconUrl(dataSettings.mainImageUrl || '/icons/top.png');
+            setSmtpUser(dataSettings.smtpUser || email);
+            if (dataSettings.smtpPass) setSmtpPass(dataSettings.smtpPass);
+          }
+        }
+
+        if (resPhotos.ok && isMounted) {
+          const dataPhotos = await resPhotos.json();
+          const formattedPhotos: PhotoLibraryItem[] = dataPhotos.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            url: item.url,
+          }));
+          setPhotoLibrary(formattedPhotos);
+        }
+      } catch (error) {
+        console.error('設定データの取得エラー:', error);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+
+    fetchData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (faviconUrl) {
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = faviconUrl;
+    }
+
+    if (siteTitle) {
+      document.title = siteTitle;
+    }
+  }, [faviconUrl, siteTitle]);
+
+  const handleAdminEmailChange = (val: string) => {
+    setAdminEmail(val);
+    setSmtpUser(val);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFaviconUrl(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          siteTitle,
+          contactEmail: adminEmail,
+          mainImageUrl: faviconUrl,
+          smtpUser: adminEmail,
+          smtpPass,
+        }),
+      });
+
+      if (!res.ok) throw new Error('保存に失敗しました');
+
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+      if (link) {
+        link.href = faviconUrl;
+      }
+
+      alert('基本設定および送信用メール設定（SMTP）を保存しました！');
+      router.refresh();
+    } catch (error) {
+      console.error('設定保存エラー:', error);
+      alert('設定の保存に失敗しました。');
+    }
+  };
+
+  return (
+    <div className="space-y-8 max-w-4xl">
+      <div className="flex items-center gap-3">
+        <h1 className="text-3xl font-bold text-gray-800">基本設定</h1>
+        <Image src="/icons/settings.png" alt="歯車アイコン" width={48} height={48} />
+      </div>
+
+      <form onSubmit={handleSave} className="space-y-8 pt-4">
+        {/* サイトのタイトル */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            サイトのタイトル
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="text"
+              value={siteTitle}
+              onChange={(e) => setSiteTitle(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm"
+              placeholder="サイト名を入力"
+            />
+          </div>
+        </div>
+
+        {/* サイトのアイコン */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-start gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg pt-3">
+            サイトのアイコン<br />
+            <span className="text-xs text-gray-400 font-normal">（ファビコン設定）</span>
+          </label>
+
+          <div className="md:col-span-8 space-y-3">
+            <div className="flex items-center gap-6 flex-wrap">
+              <div className="w-16 h-16 rounded-full border border-gray-300 bg-white flex items-center justify-center overflow-hidden shadow-sm flex-shrink-0 p-2">
+                {faviconUrl ? (
+                  <img src={faviconUrl} alt="ファビコン" className="w-full h-full object-contain" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full border border-gray-300 bg-gray-100" />
+                )}
+              </div>
+
+              <div className="border border-gray-300 rounded-xl p-2.5 bg-gray-100 flex items-center gap-3 shadow-sm min-w-[220px]">
+                <div className="flex gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-400"></span>
+                </div>
+
+                <div className="border border-gray-300 rounded-t-lg px-3 py-1 flex items-center gap-2 bg-white shadow-xs">
+                  <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {faviconUrl ? (
+                      <img src={faviconUrl} alt="タブアイコン" className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="w-3.5 h-3.5 rounded-full border border-gray-400 bg-gray-200" />
+                    )}
+                  </div>
+
+                  <span className="text-xs font-medium text-gray-700 truncate max-w-[100px]">
+                    {siteTitle || 'サイト名'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(true)}
+                className="px-4 py-2 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 rounded-lg text-sm font-semibold shadow-sm transition"
+              >
+                📷 「写真」から選択
+              </button>
+
+              <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition">
+                ファイル選択
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* 管理者 兼 送信用メールアドレス */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            管理者＆送信用メールアドレス<br />
+            <span className="text-xs text-gray-400 font-normal">（お問い合わせ返信用 Gmail）</span>
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="email"
+              value={adminEmail}
+              onChange={(e) => handleAdminEmailChange(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+              placeholder="yozakura810114514@gmail.com"
+            />
+          </div>
+        </div>
+
+        {/* メール送信（SMTP）認証設定 */}
+        <div className="border-t border-gray-200 pt-6 space-y-6">
+          <h2 className="text-xl font-bold text-gray-800">お問い合わせ メール送信認証設定</h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+            <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+              Google アプリパスワード<br />
+              <span className="text-xs text-gray-400 font-normal">（16桁の生成コード）</span>
+            </label>
+            <div className="md:col-span-8">
+              <input
+                type="password"
+                value={smtpPass}
+                onChange={(e) => setSmtpPass(e.target.value)}
+                className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+                placeholder="••••••••••••"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 保存ボタン */}
+        <div className="pt-6 flex justify-end max-w-md md:max-w-none border-t border-gray-200">
+          <button
+            type="submit"
+            className="px-8 py-3 bg-[#DDE7F3] hover:bg-[#c9d9ec] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+          >
+            設定を保存
+          </button>
+        </div>
+      </form>
+
+      {/* 写真選択モーダル */}
+      {isMediaModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 relative">
+            <button
+              onClick={() => setIsMediaModalOpen(false)}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl"
+            >
+              ✕
+            </button>
+
+            <h3 className="text-lg font-bold text-gray-800 border-b pb-3">「写真」からファビコン画像を選択</h3>
+
+            {photoLibrary.length > 0 ? (
+              <div className="grid grid-cols-3 gap-3 max-h-64 overflow-y-auto p-1">
+                {photoLibrary.map((photo) => (
+                  <div
+                    key={photo.id}
+                    onClick={() => {
+                      setFaviconUrl(photo.url);
+                      setIsMediaModalOpen(false);
+                    }}
+                    className={`border-2 rounded-xl p-2 cursor-pointer transition flex flex-col items-center hover:scale-105 ${
+                      faviconUrl === photo.url ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-contain" />
+                    </div>
+                    <span className="text-xs text-gray-600 truncate w-full text-center mt-1">{photo.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-gray-400 text-sm">
+                ライブラリに登録された画像がありません。「写真・メディア素材」画面から先に追加してください。
+              </div>
+            )}
+
+            <div className="flex justify-end pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300 transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+```
+
+---
+
+### ② お問い合わせ返信 ＆ 実メール送信 API
+
+`src/app/api/inquiries/route.ts`
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import nodemailer from 'nodemailer';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const type = searchParams.get('type');
+  const limit = Number(searchParams.get('limit')) || 50;
+
+  try {
+    if (type === 'settings') {
+      const settings = await prisma.topSetting.findUnique({
+        where: { id: 'inquiry_settings' },
+      });
+      return NextResponse.json(settings);
+    }
+
+    const inquiries = await prisma.inquiry.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        message: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    return NextResponse.json(inquiries);
+  } catch (error) {
+    console.error('GET Inquiries Error:', error);
+    return NextResponse.json({ error: 'データ取得エラー' }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { companyName, name, email, content } = body;
+
+    const fullMessage = companyName
+      ? `【会社名】${companyName}\n\n${content || ''}`
+      : content || '';
+
+    const newInquiry = await prisma.inquiry.create({
+      data: {
+        name: name || '匿名',
+        email: email || '',
+        message: fullMessage,
+        status: '未対応',
+      },
+    });
+
+    try {
+      await prisma.announcement.create({
+        data: {
+          title: `【お問い合わせ】${name || '匿名'}様より新しいメッセージが届きました`,
+          category: '重要',
+          content: `差出人: ${name || '匿名'} (${email || 'メールアドレスなし'})\n\n本文:\n${fullMessage}`,
+        },
+      });
+    } catch (noticeErr) {
+      console.warn('お知らせ自動生成エラー:', noticeErr);
+    }
+
+    return NextResponse.json(newInquiry, { status: 201 });
+  } catch (error) {
+    console.error('POST Inquiry Error:', error);
+    return NextResponse.json({ error: '送信失敗' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+
+    if (body.isSettings) {
+      const updatedSettings = await prisma.topSetting.upsert({
+        where: { id: 'inquiry_settings' },
+        update: { heroSubtitle: JSON.stringify(body.settingsData) },
+        create: {
+          id: 'inquiry_settings',
+          heroSubtitle: JSON.stringify(body.settingsData),
+        },
+      });
+      return NextResponse.json(updatedSettings);
+    }
+
+    if (body.isUserReply && body.userReplyText) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---USER_REPLY---\n${body.userReplyText}`;
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '未対応',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    if (body.replyText && body.email) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---ADMIN_REPLY---\n${body.replyText}`;
+
+      let smtpUser = process.env.SMTP_USER || '';
+      let smtpPass = process.env.SMTP_PASS || '';
+      let contactEmail = smtpUser;
+
+      try {
+        const siteSetting = await prisma.setting.findFirst();
+        if (siteSetting) {
+          if (siteSetting.smtpUser) smtpUser = siteSetting.smtpUser;
+          if (siteSetting.smtpPass) smtpPass = siteSetting.smtpPass;
+          if (siteSetting.contactEmail) contactEmail = siteSetting.contactEmail;
+        }
+      } catch (e) {
+        console.warn('Settingテーブル取得スキップ:', e);
+      }
+
+      smtpPass = (smtpPass || '').replace(/^["']|["']$/g, '').trim();
+      smtpUser = (smtpUser || '').trim();
+
+      if (!smtpUser || !smtpPass) {
+        return NextResponse.json(
+          { error: '基本設定で「送信用メールアドレス」と「Googleアプリパスワード」が設定されていません。' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"BeSmile 事務局" <${smtpUser}>`,
+          replyTo: contactEmail || smtpUser,
+          to: body.email,
+          subject: `【BeSmile】お問い合わせへのご返信`,
+          text: body.replyText,
+        });
+      } catch (mailError: any) {
+        console.error('[MAIL ERROR] 実メール送信失敗:', mailError);
+        return NextResponse.json(
+          { error: `メール送信エラー: ${mailError.message || mailError}` },
+          { status: 500 }
+        );
+      }
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '対応済み',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    const updatedInquiry = await prisma.inquiry.update({
+      where: { id: body.id },
+      data: { status: body.status },
+    });
+
+    return NextResponse.json(updatedInquiry);
+  } catch (error: any) {
+    console.error('PUT Inquiry Error:', error);
+    return NextResponse.json({ error: error.message || '更新失敗' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'IDが必要です' }, { status: 400 });
+  }
+
+  try {
+    await prisma.inquiry.delete({
+      where: { id },
+    });
+    return NextResponse.json({ message: '削除完了' });
+  } catch (error) {
+    console.error('DELETE Inquiry Error:', error);
+    return NextResponse.json({ error: '削除失敗' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+### ③ 基本設定 API（データベース保存対応）
+
+`src/app/api/settings/route.ts`
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  try {
+    let setting = await prisma.setting.findFirst();
+
+    if (!setting) {
+      setting = await prisma.setting.create({
+        data: {
+          id: 'site_settings',
+          siteTitle: 'BE SMILE',
+          contactEmail: 'admin@example.com',
+          mainImageUrl: '/icons/top.png',
+          smtpUser: process.env.SMTP_USER || '',
+          smtpPass: process.env.SMTP_PASS || '',
+        },
+      });
+    }
+
+    return NextResponse.json(setting, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+      },
+    });
+  } catch (error) {
+    console.error('GET Error:', error);
+    return NextResponse.json({ error: '取得エラー' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+    const { siteTitle, siteUrl, contactEmail, mainImageUrl, smtpUser, smtpPass } = body;
+
+    const updatedSetting = await prisma.setting.upsert({
+      where: { id: 'site_settings' },
+      update: {
+        siteTitle: siteTitle || 'BE SMILE',
+        siteUrl: siteUrl || '',
+        contactEmail: contactEmail || 'admin@example.com',
+        mainImageUrl: mainImageUrl || '/icons/top.png',
+        ...(smtpUser !== undefined ? { smtpUser } : {}),
+        ...(smtpPass !== undefined ? { smtpPass } : {}),
+      },
+      create: {
+        id: 'site_settings',
+        siteTitle: siteTitle || 'BE SMILE',
+        siteUrl: siteUrl || '',
+        contactEmail: contactEmail || 'admin@example.com',
+        mainImageUrl: mainImageUrl || '/icons/top.png',
+        smtpUser: smtpUser || '',
+        smtpPass: smtpPass || '',
+      },
+    });
+
+    return NextResponse.json({ success: true, setting: updatedSetting });
+  } catch (error) {
+    console.error('PUT Error:', error);
+    return NextResponse.json({ error: '保存エラー' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+### ④ トップページ（動的即時反映）
+
+`src/app/page.tsx`
+
+```tsx
+import Link from 'next/link';
+import Script from 'next/script';
+import { prisma } from '@/lib/prisma';
+import ContactForm from '@/app/components/ContactForm';
+import AnalyticsTracker from '@/app/components/AnalyticsTracker';
+
+export const dynamic = 'force-dynamic';
+
+const isVideoUrl = (url: string) => {
+  if (typeof url !== 'string' || !url) return false;
+  if (url.startsWith('data:video/')) return true;
+  const cleanUrl = url.split('?')[0].toLowerCase();
+  return /\.(mp4|webm|mov|m4v|ogv)$/.test(cleanUrl);
+};
+
+export default async function HomePage() {
+  let topSetting = null;
+  let recentWorks: any[] = [];
+
+  try {
+    topSetting = await prisma.topSetting.findUnique({
+      where: { id: 'top_settings' },
+    });
+
+    recentWorks = await prisma.work.findMany({
+      where: { creatorId: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 4,
+      select: {
+        id: true,
+        title: true,
+        category: true,
+        imageUrl: true,
+        creatorId: true,
+        creator: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+  } catch (error) {
+    console.error('データ取得エラー:', error);
+  }
+
+  const heroTitle = topSetting?.heroTitle || 'クリエイターとして働く。\n企業の力になる。';
+  const leadDescription = topSetting?.aboutDescription || 'BeSmileは、WEB制作・動画・DTP・イラスト・Other（3D、ゲーム、音源など）を行うクリエイター特化型の就労継続支援A型事業所です。';
+
+  let headerLogoType = 'text';
+  let footerLogoType = 'text';
+  let headerLogoText = 'BeSmile';
+  let instagramUrl = 'https://www.instagram.com/besmile_higashimikuni/?hl=ja';
+  let twitterUrl = 'https://x.com/bsma13a';
+
+  let categoryCounts = {
+    web: 5,
+    movie: 5,
+    dtp: 3,
+    illust: 10,
+    other: 5,
+    dateNote: '※2026年7月付',
+  };
+
+  if (topSetting?.heroSubtitle) {
+    try {
+      const parsed = JSON.parse(topSetting.heroSubtitle);
+      headerLogoType = parsed.headerLogoType || 'text';
+      footerLogoType = parsed.footerLogoType || 'text';
+      headerLogoText = parsed.headerLogoText || 'BeSmile';
+
+      if (parsed.instagramUrl) instagramUrl = parsed.instagramUrl;
+      if (parsed.twitterUrl) twitterUrl = parsed.twitterUrl;
+
+      if (parsed.web !== undefined || parsed.movie !== undefined) {
+        categoryCounts = { ...categoryCounts, ...parsed };
+      }
+    } catch (e) {}
+  }
+
+  const totalCreators =
+    Number(categoryCounts.web || 0) +
+    Number(categoryCounts.movie || 0) +
+    Number(categoryCounts.dtp || 0) +
+    Number(categoryCounts.illust || 0) +
+    Number(categoryCounts.other || 0);
+
+  const headerLogoUrl = topSetting?.aboutTitle || '/icons/top.png';
+  const footerLogoUrl = topSetting?.footerLogoUrl || '/icons/top.png';
+  const footerLogoText = topSetting?.footerLogoText || 'BeSmile';
+  const footerComment = topSetting?.aboutDescription || '動画・DTP・イラスト・WEB制作・Otherを行うクリエイター特化型の就労継続支援A型事業所';
+
+  let heroImages = [
+    '/assets/images/top-main-web.jpg',
+    '/assets/images/top-main-movie.jpg',
+    '/assets/images/top-main-dtp.jpg',
+    '/assets/images/top-main-illust.jpg',
+    '/assets/images/top-main-other.jpg',
+  ];
+  if (topSetting?.mainImageUrl) {
+    try {
+      const parsed = JSON.parse(topSetting.mainImageUrl);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        heroImages = parsed.concat(heroImages).slice(0, 5);
+      }
+    } catch (e) {}
+  }
+
+  return (
+    <>
+      <AnalyticsTracker />
+      <link rel="stylesheet" href="/assets/css/style.css" />
+
+      {/* ヘッダー */}
+      <header className="site-header" id="header">
+        <div className="header-inner">
+          <Link className="brand flex items-center gap-2" href="/" aria-label="BeSmile TOP">
+            {headerLogoType === 'image' ? (
+              <img src={headerLogoUrl} alt="ロゴ" className="h-10 object-contain" />
+            ) : (
+              <span className="brand-main">{headerLogoText}</span>
+            )}
+            <span className="brand-sub">Creative Support Team</span>
+          </Link>
+          <nav className="global-nav" aria-label="グローバルナビ">
+            <Link href="/artists">CREATOR</Link>
+            <a href="#contact">CONTACT</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        {/* HERO */}
+        <section className="hero section-bg">
+          <div className="container hero-grid hero-grid-revised">
+            <div className="hero-copy">
+              <p className="eyebrow">Creative Support Team</p>
+              <h1>
+                CREATORS<br />
+                WORK.<br />
+                <span>COMPANIES<br />GROW.</span>
+              </h1>
+
+              <h2 className="whitespace-pre-wrap">{heroTitle}</h2>
+              <p className="lead">{leadDescription}</p>
+
+              <div className="button-row">
+                <Link className="btn btn-dark" href="/artists">
+                  CREATORを見る <span>→</span>
+                </Link>
+                <a className="btn btn-blue" href="#contact">
+                  お問い合わせ <span>→</span>
+                </a>
+              </div>
+            </div>
+            <div className="hero-mosaic" aria-label="制作ジャンルイメージ">
+              <div className="mosaic-item mosaic-web"><img src={heroImages[0]} alt="WEB制作イメージ" /></div>
+              <div className="mosaic-item mosaic-movie"><img src={heroImages[1]} alt="動画制作イメージ" /></div>
+              <div className="mosaic-item mosaic-dtp"><img src={heroImages[2]} alt="DTP制作イメージ" /></div>
+              <div className="mosaic-item mosaic-illust"><img src={heroImages[3]} alt="イラスト制作イメージ" /></div>
+              <div className="mosaic-item mosaic-other"><img src={heroImages[4]} alt="Other制作イメージ" /></div>
+            </div>
+          </div>
+        </section>
+
+        {/* クリエイター数セクション */}
+        <section className="bg-white border-y border-gray-100 py-12">
+          <div className="container mx-auto px-4">
+            <div className="grid grid-cols-1 lg:grid-cols-12 items-center gap-8">
+              <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-gray-200 pb-6 lg:pb-0 lg:pr-8">
+                <h2 className="text-2xl md:text-3xl font-bold text-gray-900 mb-2">クリエイター数</h2>
+                <p className="text-sm font-medium text-gray-700">
+                  BeSmileには、<strong className="text-base text-gray-900 font-bold">{totalCreators}名</strong>のクリエイターが在籍しています。
+                </p>
+                {categoryCounts.dateNote && (
+                  <p className="text-xs text-gray-400 mt-1 font-mono">{categoryCounts.dateNote}</p>
+                )}
+              </div>
+
+              <div className="lg:col-span-8 grid grid-cols-2 md:grid-cols-5 gap-4 text-center">
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">WEB制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.web}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">動画制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.movie}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">DTP制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.dtp}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div className="border-r border-gray-100 last:border-0 pr-2">
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">イラスト制作</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.illust}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Other</span>
+                  <div className="flex items-baseline justify-center gap-0.5">
+                    <span className="text-3xl md:text-4xl font-extrabold text-gray-900">{categoryCounts.other}</span>
+                    <span className="text-xs font-bold text-gray-600">名</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* PORTFOLIO */}
+        <section className="portfolio section-bg" id="portfolio">
+          <div className="container">
+            <div className="section-head split-head">
+              <div>
+                <p className="num">02</p>
+                <h2>PORTFOLIO</h2>
+                <p>在籍クリエイターの制作実績をご紹介します。</p>
+              </div>
+              <Link className="btn btn-outline" href="/artists">
+                すべてのCREATORを見る <span>→</span>
+              </Link>
+            </div>
+            <p className="news-label">新着情報</p>
+            <div className="work-grid">
+              {recentWorks.length > 0 ? (
+                recentWorks.map((work) => {
+                  const creatorName = work.creator?.name || '';
+                  const creatorId = work.creatorId || work.creator?.id;
+                  const imageUrl = work.imageUrl || '/icons/works.png';
+                  const hrefUrl = `/harenowa?id=${creatorId}`;
+
+                  return (
+                    <Link key={work.id} className="work-card group" href={hrefUrl}>
+                      <div
+                        className="w-full h-52 rounded-md p-3 flex items-center justify-center overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
+                        style={{ backgroundColor: '#C5C5C5' }}
+                      >
+                        {isVideoUrl(imageUrl) ? (
+                          <video src={imageUrl} autoPlay loop muted playsInline style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                        ) : (
+                          <img src={imageUrl} alt={work.title} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+                        )}
+                      </div>
+                      <h3 className="mt-3 text-base font-bold text-gray-800 truncate">{creatorName}</h3>
+                      <p className="text-xs text-gray-500 font-medium truncate">
+                        {work.category || '制作実績'} / {work.title}
+                      </p>
+                    </Link>
+                  );
+                })
+              ) : (
+                <div className="col-span-full text-center py-12 text-gray-400">現在、表示できる制作実績はありません。</div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/* CONTACT */}
+        <section className="contact" id="contact">
+          <div className="container contact-grid">
+            <div className="space-y-6">
+              <div className="section-head">
+                <p className="num">03</p>
+                <h2>CONTACT</h2>
+                <p>お仕事のご相談・お見積りなど、<br />お気軽にお問い合わせください。</p>
+              </div>
+
+              <div className="relative overflow-hidden w-full h-80 md:h-96">
+                <img
+                  src="/assets/images/top-contact-bg.jpg"
+                  alt="制作相談・見学受付中"
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 p-6 flex items-center justify-center">
+                  <div className="bg-white/70 p-6 md:p-10 border border-blue-400/50 text-center max-w-sm w-full shadow-xs">
+                    <h3 className="text-lg md:text-xl font-bold text-gray-900 mb-3 leading-snug">
+                      制作相談・見学も受付中です
+                    </h3>
+                    <p className="text-xs md:text-sm text-gray-700 leading-relaxed">
+                      制作の流れやご相談内容に合わせて、担当スタッフが丁寧にご案内いたします。初めてのご依頼でも安心してお問い合わせください。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <ContactForm />
+          </div>
+        </section>
+      </main>
+
+      {/* フッター */}
+      <footer className="site-footer" id="footer">
+        <div className="container footer-grid items-center">
+          <div>
+            <Link className="footer-brand font-bold text-2xl" href="/">
+              {footerLogoType === 'image' ? (
+                <img src={footerLogoUrl} alt="フッターロゴ" className="h-10 object-contain mb-2" />
+              ) : (
+                footerLogoText
+              )}
+            </Link>
+            <p className="whitespace-pre-wrap mt-2">{footerComment}</p>
+            <a className="footer-url" href="https://sunplace-osaka.com/">https://sunplace-osaka.com/</a>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-6 md:gap-8 justify-end">
+            <nav className="footer-nav">
+              <Link href="/artists">CREATOR</Link>
+              <a href="#contact">CONTACT</a>
+            </nav>
+
+            <div className="flex items-center gap-3">
+              <a
+                href={instagramUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Instagram"
+                className="w-10 h-10 rounded-full border border-white flex items-center justify-center text-white hover:opacity-70 transition-opacity"
+              >
+                <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                  <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z"/>
+                </svg>
+              </a>
+
+              <a
+                href={twitterUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="X (Twitter)"
+                className="w-10 h-10 rounded-full border border-white flex items-center justify-center text-white hover:opacity-70 transition-opacity"
+              >
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+        <div className="container footer-bottom">
+          <small>© BeSmile All Rights Reserved.</small>
+        </div>
+      </footer>
+
+      <Script src="/assets/js/main.js" strategy="lazyOnload" />
+    </>
+  );
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+これまでの全修正・機能拡張（本番公開ビルド対応、メール送信機能、UI調整、メディア最適化など）を体系的にまとめました。
+
+---
+
+# 🚀 BeSmile アプリ 開発・本番改修 総合まとめ
+
+---
+
+## 1. 実施した課題と解決策一覧
+
+* **Vercel デプロイ・本番ビルドの安定化**
+* `useSearchParams()` を使用するページ（写真、クリエイター、作品等）を `<Suspense>` でラップし、ビルドエラーを完全解消。
+* `package.json` のビルドスクリプトを `prisma generate && next build` に設定。
+
+
+* **管理者ログインの復旧**
+* `AdminUser` テーブルにパスワード（bcrypt ハッシュ化）を直接登録。
+
+
+* **サイト全体の即時反映化（キャッシュ問題解消）**
+* `src/app/page.tsx` に `export const dynamic = 'force-dynamic'` を適用し、管理画面での変更が本番サイトへ即座に反映されるよう改修。
+
+
+* **基本設定（`SettingsPage`）のサーバーレス対応 ＆ UI 調整**
+* Vercel 環境でのファイル書き込み（500 エラー）を撤廃し、Neon DB（`Setting` テーブル）へ保存する仕様に変更。
+* 不要な「URL」入力欄を削除。
+* ファビコンの推奨仕様（サイズ・容量・見え方）に関するコンパクトなガイドを追加。
+
+
+* **お問い合わせ返信メール送信機能（Gmail SMTP）の実装**
+* 管理画面で保存された Gmail と Google アプリパスワードを DB から取得し、Nodemailer 経由で相手のメールアドレスへ実際に送信する仕様へ修正。
+
+
+* **写真・メディア素材管理の拡張**
+* 動画・音声ファイルの **最大 5MB 対応**。
+* アップロード画像（JPEG/WebP/PNG）の **Canvas によるクライアント側自動圧縮（1MB以内へ最適化）** を実装。
+* 説明文をコンパクトに配置。
+
+
+
+---
+
+## 2. 確定版主要コード一覧
+
+### ① 写真・メディア素材管理（自動圧縮・5MB対応）
+
+`src/app/admin/photos/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect, Suspense } from 'react';
+import Image from 'next/image';
+import { useSearchParams } from 'next/navigation';
+
+type PhotoItem = {
+  id: string;
+  name: string;
+  type: string;
+  date: string;
+  url: string;
+  size: string;
+};
+
+const ITEMS_PER_PAGE = 5;
+
+// 画像の自動圧縮処理（最大長辺1600px・WebP/JPEG品質0.82・1MB以内に収める処理）
+const compressImage = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    if (file.size <= 1024 * 1024 && file.type === 'image/png') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const img = new window.Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 1600;
+      const MAX_HEIGHT = 1600;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width = Math.round((width * MAX_HEIGHT) / height);
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        const mimeType = file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+        const compressedBase64 = canvas.toDataURL(mimeType, 0.82);
+        resolve(compressedBase64);
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    };
+  });
+};
+
+function PhotosContent() {
+  const searchParams = useSearchParams();
+  const targetId = searchParams.get('id');
+
+  const [photos, setPhotos] = useState<PhotoItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedPhoto, setSelectedPhoto] = useState<PhotoItem | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [newPhotoFiles, setNewPhotoFile] = useState<File[]>([]);
+  const [isUploading, setIsSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+
+  const fetchPhotos = async (forceRefresh = false) => {
+    try {
+      const fetchOption: RequestInit = forceRefresh
+        ? { cache: 'reload' }
+        : { next: { revalidate: 60 } };
+
+      const res = await fetch('/api/photos', fetchOption);
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+
+      const formattedPhotos: PhotoItem[] = data.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        type:
+          item.type ||
+          item.category ||
+          (item.url?.startsWith('data:video') || item.url?.endsWith('.mp4')
+            ? 'video'
+            : item.url?.startsWith('data:audio') || item.url?.endsWith('.mp3')
+            ? 'audio'
+            : 'image'),
+        url: item.url,
+        size: item.size || '1.0 MB',
+        date: new Date(item.createdAt || Date.now())
+          .toLocaleDateString('ja-JP', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          })
+          .replace(/\//g, ' '),
+      }));
+
+      setPhotos(formattedPhotos);
+
+      if (targetId) {
+        const targetIndex = formattedPhotos.findIndex((p) => p.id === targetId);
+        if (targetIndex !== -1) {
+          const calculatedPage = Math.floor(targetIndex / ITEMS_PER_PAGE) + 1;
+          setCurrentPage(calculatedPage);
+          setSelectedPhoto(formattedPhotos[targetIndex]);
+        }
+      }
+    } catch (error) {
+      console.error('写真素材の取得エラー:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    fetchPhotos();
+    return () => {
+      isMounted = false;
+    };
+  }, [targetId]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const selected = Array.from(e.target.files);
+      const validFiles: File[] = [];
+
+      for (const file of selected) {
+        const isMedia = file.type.startsWith('video/') || file.type.startsWith('audio/');
+        const limitMB = isMedia ? 5 : 5;
+
+        if (file.size > limitMB * 1024 * 1024) {
+          alert(`「${file.name}」はサイズ制限（${limitMB}MB）を超えているため除外されました。`);
+          continue;
+        }
+        validFiles.push(file);
+      }
+
+      setNewPhotoFile(validFiles);
+    }
+  };
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  const handleAddPhotos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPhotoFiles.length === 0) {
+      alert('ファイルを選択してください。');
+      return;
+    }
+
+    setIsSaving(true);
+    setUploadProgress({ current: 0, total: newPhotoFiles.length });
+
+    try {
+      for (let i = 0; i < newPhotoFiles.length; i++) {
+        const file = newPhotoFiles[i];
+        setUploadProgress({ current: i + 1, total: newPhotoFiles.length });
+
+        let mediaType = 'image';
+        let base64Url = '';
+
+        if (file.type.startsWith('video/')) {
+          mediaType = 'video';
+          base64Url = await fileToBase64(file);
+        } else if (file.type.startsWith('audio/')) {
+          mediaType = 'audio';
+          base64Url = await fileToBase64(file);
+        } else {
+          base64Url = await compressImage(file);
+        }
+
+        const fileName = file.name.replace(/\.[^/.]+$/, '');
+        const approxSizeMB = (
+          (base64Url.length * (3 / 4)) /
+          (1024 * 1024)
+        ).toFixed(1);
+
+        await fetch('/api/photos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: fileName,
+            url: base64Url,
+            category: mediaType,
+            size: `${approxSizeMB} MB`,
+          }),
+        });
+      }
+
+      setIsAddModalOpen(false);
+      setNewPhotoFile([]);
+      await fetchPhotos(true);
+      alert(`${newPhotoFiles.length}件の素材を追加しました！`);
+    } catch (error) {
+      console.error('保存エラー:', error);
+      alert('素材の追加に失敗しました。');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeletePhoto = async () => {
+    if (!selectedPhoto) return;
+    if (confirm(`素材「${selectedPhoto.name}」をライブラリから削除してもよろしいですか？`)) {
+      try {
+        await fetch(`/api/photos?id=${selectedPhoto.id}`, {
+          method: 'DELETE',
+        });
+
+        setSelectedPhoto(null);
+        await fetchPhotos(true);
+        alert('素材を削除しました。');
+      } catch (error) {
+        console.error('削除エラー:', error);
+        alert('素材の削除に失敗しました。');
+      }
+    }
+  };
+
+  const totalPages = Math.ceil(photos.length / ITEMS_PER_PAGE) || 1;
+  const paginatedPhotos = photos.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-bold text-gray-800">写真・メディア素材</h1>
+          <Image src="/icons/photos.png" alt="写真アイコン" width={48} height={48} />
+        </div>
+
+        <button
+          onClick={() => {
+            setNewPhotoFile([]);
+            setIsAddModalOpen(true);
+          }}
+          className="flex items-center gap-2 px-5 py-2.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+        >
+          <span className="text-xl font-bold">＋</span> 新規素材の追加
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="grid grid-cols-12 bg-[#DDE7F3] py-3 px-6 text-gray-700 font-medium">
+          <div className="col-span-8 md:col-span-9 pl-24">ファイル名 / 種別</div>
+          <div className="col-span-4 md:col-span-3 text-right pr-6">投稿日</div>
+        </div>
+
+        <div className="divide-y divide-gray-200">
+          {isLoading ? (
+            <div className="p-12 text-center text-gray-400">読み込み中...</div>
+          ) : paginatedPhotos.length > 0 ? (
+            paginatedPhotos.map((photo) => (
+              <div
+                key={photo.id}
+                onClick={() => setSelectedPhoto(photo)}
+                className={`grid grid-cols-12 items-center p-4 hover:bg-gray-50 transition cursor-pointer ${
+                  targetId === photo.id ? 'bg-[#DAE6DC]/40 border-l-4 border-[#8fae94]' : ''
+                }`}
+              >
+                <div className="col-span-8 md:col-span-9 flex items-center gap-6">
+                  <div className="w-20 h-20 bg-gray-100 border border-gray-300 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {photo.type === 'image' && (
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-cover" />
+                    )}
+                    {photo.type === 'video' && (
+                      <div className="flex flex-col items-center justify-center text-gray-500">
+                        <span className="text-2xl">🎬</span>
+                        <span className="text-[10px] font-bold mt-1">動画</span>
+                      </div>
+                    )}
+                    {photo.type === 'audio' && (
+                      <div className="flex flex-col items-center justify-center text-gray-500">
+                        <span className="text-2xl">🎵</span>
+                        <span className="text-[10px] font-bold mt-1">音楽</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="font-medium text-gray-800 block text-base truncate max-w-xs md:max-w-md">
+                      {photo.name}
+                    </span>
+                    <span className="text-xs text-gray-400 uppercase font-semibold">
+                      {photo.type === 'image' ? '画像' : photo.type === 'video' ? '動画' : '音楽'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="col-span-4 md:col-span-3 text-right pr-6 text-gray-600 font-mono text-sm">
+                  {photo.date}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="p-12 text-center text-gray-400">写真・メディア素材は登録されていません。</div>
+          )}
+        </div>
+
+        <div className="flex justify-end items-center gap-2 p-6 bg-white border-t">
+          <button onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))} disabled={currentPage === 1} className="px-2 text-gray-400 hover:text-gray-600 disabled:opacity-30">&lt;</button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+            <button key={page} onClick={() => setCurrentPage(page)} className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition ${currentPage === page ? 'bg-gray-600 text-white font-bold' : 'border border-gray-300 hover:bg-gray-100 text-gray-700'}`}>
+              {page}
+            </button>
+          ))}
+          <button onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))} disabled={currentPage === totalPages} className="px-2 text-gray-400 hover:text-gray-600 disabled:opacity-30">&gt;</button>
+        </div>
+      </div>
+
+      {isAddModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
+            <button
+              onClick={() => !isUploading && setIsAddModalOpen(false)}
+              disabled={isUploading}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl hover:text-gray-600 disabled:opacity-30"
+            >
+              ✕
+            </button>
+            <h2 className="text-xl font-bold text-gray-800">新規素材の追加</h2>
+
+            {/* 容量・自動圧縮のコンパクトな説明 */}
+            <div className="bg-[#FAF8F5] border border-gray-200 rounded-lg p-2.5 text-[11px] text-gray-500 space-y-1">
+              <div>• <strong>画像:</strong> 1MB以内推奨（自動で最適化・圧縮）</div>
+              <div>• <strong>動画・音声:</strong> 最大5MBまで対応（MP4 / MP3等）</div>
+            </div>
+
+            <form onSubmit={handleAddPhotos} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  ファイル選択（複数選択OK）
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,video/*,audio/*"
+                  onChange={handleFileChange}
+                  disabled={isUploading}
+                  className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#DAE6DC] file:text-gray-800 cursor-pointer disabled:opacity-50"
+                />
+              </div>
+
+              {newPhotoFiles.length > 0 && (
+                <div className="p-2.5 bg-gray-50 border rounded-xl max-h-32 overflow-y-auto space-y-1">
+                  <div className="text-[11px] font-bold text-gray-600 border-b pb-1 mb-1">
+                    選択中 ({newPhotoFiles.length}件):
+                  </div>
+                  {newPhotoFiles.map((f, idx) => (
+                    <div key={idx} className="text-[11px] text-gray-700 truncate flex justify-between">
+                      <span className="truncate">• {f.name}</span>
+                      <span className="text-gray-400 ml-2 flex-shrink-0">{(f.size / (1024 * 1024)).toFixed(1)} MB</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {isUploading && (
+                <div className="space-y-1.5 text-center py-1">
+                  <div className="text-xs font-bold text-gray-700">
+                    アップロード＆最適化中... ({uploadProgress.current} / {uploadProgress.total})
+                  </div>
+                  <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                    <div
+                      className="bg-[#8fae94] h-full transition-all duration-200"
+                      style={{
+                        width: `${(uploadProgress.current / uploadProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  disabled={isUploading}
+                  className="px-3.5 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-xs font-medium disabled:opacity-50"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUploading || newPhotoFiles.length === 0}
+                  className="px-4 py-1.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-bold rounded-lg shadow-xs transition text-xs disabled:opacity-50"
+                >
+                  {isUploading ? '保存中...' : `${newPhotoFiles.length > 0 ? `${newPhotoFiles.length}件を追加` : '追加する'}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedPhoto && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
+            <button onClick={() => setSelectedPhoto(null)} className="absolute top-4 right-4 text-gray-400 font-bold text-xl">✕</button>
+            <h2 className="text-xl font-bold text-gray-800">素材の詳細・プレビュー</h2>
+
+            <div className="w-full h-52 bg-gray-100 border rounded-xl flex items-center justify-center overflow-hidden">
+              {selectedPhoto.type === 'image' && (
+                <img src={selectedPhoto.url} alt={selectedPhoto.name} className="w-full h-full object-contain" />
+              )}
+              {selectedPhoto.type === 'video' && (
+                <video src={selectedPhoto.url} controls className="w-full h-full object-contain bg-black" />
+              )}
+              {selectedPhoto.type === 'audio' && (
+                <div className="w-full px-6 flex flex-col items-center gap-3">
+                  <span className="text-4xl">🎵</span>
+                  <audio src={selectedPhoto.url} controls className="w-full" />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 text-sm text-gray-600 border-t pt-3">
+              <div><strong className="text-gray-800">ファイル名:</strong> {selectedPhoto.name}</div>
+              <div><strong className="text-gray-800">投稿日:</strong> {selectedPhoto.date}</div>
+              <div><strong className="text-gray-800">ファイルサイズ:</strong> {selectedPhoto.size}</div>
+            </div>
+
+            <div className="flex justify-between items-center pt-4 border-t">
+              <button
+                type="button"
+                onClick={handleDeletePhoto}
+                className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 font-medium rounded-lg text-sm transition border border-red-200"
+              >
+                🗑 削除する
+              </button>
+              <button onClick={() => setSelectedPhoto(null)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function PhotosPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          写真素材画面を読み込み中...
+        </div>
+      }
+    >
+      <PhotosContent />
+    </Suspense>
+  );
+}
+
+```
+
+---
+
+### ② 基本設定画面（URL欄削除 ＆ ファビコン仕様説明付き）
+
+`src/app/admin/settings/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect } from 'react';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+
+type PhotoLibraryItem = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export default function SettingsPage() {
+  const router = useRouter();
+
+  const [siteTitle, setSiteTitle] = useState('BE SMILE');
+  const [adminEmail, setAdminEmail] = useState('admin@example.com');
+  const [faviconUrl, setFaviconUrl] = useState<string>('/icons/top.png');
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+
+  const [photoLibrary, setPhotoLibrary] = useState<PhotoLibraryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchData = async () => {
+      try {
+        const [resSettings, resPhotos] = await Promise.all([
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/photos', { cache: 'no-store' }),
+        ]);
+
+        if (resSettings.ok && isMounted) {
+          const dataSettings = await resSettings.json();
+          if (dataSettings) {
+            const email = dataSettings.contactEmail || 'admin@example.com';
+            setSiteTitle(dataSettings.siteTitle || 'BE SMILE');
+            setAdminEmail(email);
+            setFaviconUrl(dataSettings.mainImageUrl || '/icons/top.png');
+            setSmtpUser(dataSettings.smtpUser || email);
+            if (dataSettings.smtpPass) setSmtpPass(dataSettings.smtpPass);
+          }
+        }
+
+        if (resPhotos.ok && isMounted) {
+          const dataPhotos = await resPhotos.json();
+          const formattedPhotos: PhotoLibraryItem[] = dataPhotos.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            url: item.url,
+          }));
+          setPhotoLibrary(formattedPhotos);
+        }
+      } catch (error) {
+        console.error('設定データの取得エラー:', error);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+
+    fetchData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (faviconUrl) {
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = faviconUrl;
+    }
+
+    if (siteTitle) {
+      document.title = siteTitle;
+    }
+  }, [faviconUrl, siteTitle]);
+
+  const handleAdminEmailChange = (val: string) => {
+    setAdminEmail(val);
+    setSmtpUser(val);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFaviconUrl(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          siteTitle,
+          contactEmail: adminEmail,
+          mainImageUrl: faviconUrl,
+          smtpUser: adminEmail,
+          smtpPass,
+        }),
+      });
+
+      if (!res.ok) throw new Error('保存に失敗しました');
+
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+      if (link) {
+        link.href = faviconUrl;
+      }
+
+      alert('基本設定および送信用メール設定（SMTP）を保存しました！');
+      router.refresh();
+    } catch (error) {
+      console.error('設定保存エラー:', error);
+      alert('設定の保存に失敗しました。');
+    }
+  };
+
+  return (
+    <div className="space-y-8 max-w-4xl">
+      <div className="flex items-center gap-3">
+        <h1 className="text-3xl font-bold text-gray-800">基本設定</h1>
+        <Image src="/icons/settings.png" alt="歯車アイコン" width={48} height={48} />
+      </div>
+
+      <form onSubmit={handleSave} className="space-y-8 pt-4">
+        {/* サイトのタイトル */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            サイトのタイトル
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="text"
+              value={siteTitle}
+              onChange={(e) => setSiteTitle(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm"
+              placeholder="サイト名を入力"
+            />
+          </div>
+        </div>
+
+        {/* サイトのアイコン */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-start gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg pt-3">
+            サイトのアイコン<br />
+            <span className="text-xs text-gray-400 font-normal">（ファビコン設定）</span>
+          </label>
+
+          <div className="md:col-span-8 space-y-3">
+            <div className="flex items-center gap-6 flex-wrap">
+              <div className="w-16 h-16 rounded-full border border-gray-300 bg-white flex items-center justify-center overflow-hidden shadow-sm flex-shrink-0 p-2">
+                {faviconUrl ? (
+                  <img src={faviconUrl} alt="ファビコン" className="w-full h-full object-contain" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full border border-gray-300 bg-gray-100" />
+                )}
+              </div>
+
+              <div className="border border-gray-300 rounded-xl p-2.5 bg-gray-100 flex items-center gap-3 shadow-sm min-w-[220px]">
+                <div className="flex gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-400"></span>
+                </div>
+
+                <div className="border border-gray-300 rounded-t-lg px-3 py-1 flex items-center gap-2 bg-white shadow-xs">
+                  <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {faviconUrl ? (
+                      <img src={faviconUrl} alt="タブアイコン" className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="w-3.5 h-3.5 rounded-full border border-gray-400 bg-gray-200" />
+                    )}
+                  </div>
+
+                  <span className="text-xs font-medium text-gray-700 truncate max-w-[100px]">
+                    {siteTitle || 'サイト名'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(true)}
+                className="px-4 py-2 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 rounded-lg text-sm font-semibold shadow-sm transition"
+              >
+                📷 「写真」から選択
+              </button>
+
+              <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition">
+                ファイル選択
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {/* ファビコン仕様説明 */}
+            <div className="bg-[#FAF8F5] border border-gray-200/80 rounded-xl p-3 text-[11px] text-gray-500 space-y-1 max-w-md">
+              <div className="font-semibold text-gray-600 flex items-center gap-1">
+                <span>ℹ️</span> ファビコンの仕様・目安
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-gray-500 pl-0.5 leading-relaxed">
+                <li><strong>表示サイズ:</strong> ブラウザのタブ上では <strong>16×16px</strong> または <strong>32×32px</strong> の極小サイズで表示されます。</li>
+                <li><strong>推奨画像サイズ:</strong> <strong>正方形（1:1）</strong>、<code>32×32px</code> 〜 <code>512×512px</code>（PNG / ICO / SVG形式）。</li>
+                <li><strong>推奨ファイル容量:</strong> <strong>1MB以内</strong>（透過PNG推奨。シンプルなマークが綺麗に見えます）。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* 管理者 兼 送信用メールアドレス */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            管理者＆送信用メールアドレス<br />
+            <span className="text-xs text-gray-400 font-normal">（お問い合わせ返信用 Gmail）</span>
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="email"
+              value={adminEmail}
+              onChange={(e) => handleAdminEmailChange(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+              placeholder="yozakura810114514@gmail.com"
+            />
+          </div>
+        </div>
+
+        {/* メール送信（SMTP）認証設定 */}
+        <div className="border-t border-gray-200 pt-6 space-y-6">
+          <h2 className="text-xl font-bold text-gray-800">お問い合わせ メール送信認証設定</h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+            <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+              Google アプリパスワード<br />
+              <span className="text-xs text-gray-400 font-normal">（16桁の生成コード）</span>
+            </label>
+            <div className="md:col-span-8">
+              <input
+                type="password"
+                value={smtpPass}
+                onChange={(e) => setSmtpPass(e.target.value)}
+                className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+                placeholder="••••••••••••"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 保存ボタン */}
+        <div className="pt-6 flex justify-end max-w-md md:max-w-none border-t border-gray-200">
+          <button
+            type="submit"
+            className="px-8 py-3 bg-[#DDE7F3] hover:bg-[#c9d9ec] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+          >
+            設定を保存
+          </button>
+        </div>
+      </form>
+
+      {/* 写真選択モーダル */}
+      {isMediaModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 relative">
+            <button
+              onClick={() => setIsMediaModalOpen(false)}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl"
+            >
+              ✕
+            </button>
+
+            <h3 className="text-lg font-bold text-gray-800 border-b pb-3">「写真」からファビコン画像を選択</h3>
+
+            {photoLibrary.length > 0 ? (
+              <div className="grid grid-cols-3 gap-3 max-h-64 overflow-y-auto p-1">
+                {photoLibrary.map((photo) => (
+                  <div
+                    key={photo.id}
+                    onClick={() => {
+                      setFaviconUrl(photo.url);
+                      setIsMediaModalOpen(false);
+                    }}
+                    className={`border-2 rounded-xl p-2 cursor-pointer transition flex flex-col items-center hover:scale-105 ${
+                      faviconUrl === photo.url ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-contain" />
+                    </div>
+                    <span className="text-xs text-gray-600 truncate w-full text-center mt-1">{photo.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-gray-400 text-sm">
+                ライブラリに登録された画像がありません。「写真・メディア素材」画面から先に追加してください。
+              </div>
+            )}
+
+            <div className="flex justify-end pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300 transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+```
+
+---
+
+### ③ お問い合わせ返信 ＆ 実メール送信 API
+
+`src/app/api/inquiries/route.ts`
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import nodemailer from 'nodemailer';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const type = searchParams.get('type');
+  const limit = Number(searchParams.get('limit')) || 50;
+
+  try {
+    if (type === 'settings') {
+      const settings = await prisma.topSetting.findUnique({
+        where: { id: 'inquiry_settings' },
+      });
+      return NextResponse.json(settings);
+    }
+
+    const inquiries = await prisma.inquiry.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        message: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    return NextResponse.json(inquiries);
+  } catch (error) {
+    console.error('GET Inquiries Error:', error);
+    return NextResponse.json({ error: 'データ取得エラー' }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { companyName, name, email, content } = body;
+
+    const fullMessage = companyName
+      ? `【会社名】${companyName}\n\n${content || ''}`
+      : content || '';
+
+    const newInquiry = await prisma.inquiry.create({
+      data: {
+        name: name || '匿名',
+        email: email || '',
+        message: fullMessage,
+        status: '未対応',
+      },
+    });
+
+    try {
+      await prisma.announcement.create({
+        data: {
+          title: `【お問い合わせ】${name || '匿名'}様より新しいメッセージが届きました`,
+          category: '重要',
+          content: `差出人: ${name || '匿名'} (${email || 'メールアドレスなし'})\n\n本文:\n${fullMessage}`,
+        },
+      });
+    } catch (noticeErr) {
+      console.warn('お知らせ自動生成エラー:', noticeErr);
+    }
+
+    return NextResponse.json(newInquiry, { status: 201 });
+  } catch (error) {
+    console.error('POST Inquiry Error:', error);
+    return NextResponse.json({ error: '送信失敗' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+
+    if (body.isSettings) {
+      const updatedSettings = await prisma.topSetting.upsert({
+        where: { id: 'inquiry_settings' },
+        update: { heroSubtitle: JSON.stringify(body.settingsData) },
+        create: {
+          id: 'inquiry_settings',
+          heroSubtitle: JSON.stringify(body.settingsData),
+        },
+      });
+      return NextResponse.json(updatedSettings);
+    }
+
+    if (body.isUserReply && body.userReplyText) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---USER_REPLY---\n${body.userReplyText}`;
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '未対応',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    if (body.replyText && body.email) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---ADMIN_REPLY---\n${body.replyText}`;
+
+      let smtpUser = process.env.SMTP_USER || '';
+      let smtpPass = process.env.SMTP_PASS || '';
+      let contactEmail = smtpUser;
+
+      try {
+        const siteSetting = await prisma.setting.findFirst();
+        if (siteSetting) {
+          if (siteSetting.smtpUser) smtpUser = siteSetting.smtpUser;
+          if (siteSetting.smtpPass) smtpPass = siteSetting.smtpPass;
+          if (siteSetting.contactEmail) contactEmail = siteSetting.contactEmail;
+        }
+      } catch (e) {
+        console.warn('Settingテーブル取得スキップ:', e);
+      }
+
+      smtpPass = (smtpPass || '').replace(/^["']|["']$/g, '').trim();
+      smtpUser = (smtpUser || '').trim();
+
+      if (!smtpUser || !smtpPass) {
+        return NextResponse.json(
+          { error: '基本設定で「送信用メールアドレス」と「Googleアプリパスワード」が設定されていません。' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"BeSmile 事務局" <${smtpUser}>`,
+          replyTo: contactEmail || smtpUser,
+          to: body.email,
+          subject: `【BeSmile】お問い合わせへのご返信`,
+          text: body.replyText,
+        });
+      } catch (mailError: any) {
+        console.error('[MAIL ERROR] 実メール送信失敗:', mailError);
+        return NextResponse.json(
+          { error: `メール送信エラー: ${mailError.message || mailError}` },
+          { status: 500 }
+        );
+      }
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '対応済み',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    const updatedInquiry = await prisma.inquiry.update({
+      where: { id: body.id },
+      data: { status: body.status },
+    });
+
+    return NextResponse.json(updatedInquiry);
+  } catch (error: any) {
+    console.error('PUT Inquiry Error:', error);
+    return NextResponse.json({ error: error.message || '更新失敗' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'IDが必要です' }, { status: 400 });
+  }
+
+  try {
+    await prisma.inquiry.delete({
+      where: { id },
+    });
+    return NextResponse.json({ message: '削除完了' });
+  } catch (error) {
+    console.error('DELETE Inquiry Error:', error);
+    return NextResponse.json({ error: '削除失敗' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+## 3. 今後の Git デプロイ手順
+
+変更を本番環境（Vercel）へ反映させる際は、以下のコマンドをターミナルで実行するだけで自動反映されます：
+
+```bash
+cd /Users/user/besmile-app
+git add .
+git commit -m "Update application settings and features"
+git push origin main
+
+```
+
+
+
+
+
+今回のセッションで実施したすべての修正・機能改善の内容を、最新の完全版コードと一緒に整理してまとめました。
+
+---
+
+# 🚀 BeSmile アプリ 開発・本番改修 総合まとめ
+
+---
+
+## 1. 実施した改修一覧と目的
+
+1. **Vercel デプロイ・本番ビルドの安定化**
+* `useSearchParams()` を使用するページ（写真、クリエイター、作品等）を `<Suspense>` でラップし、ビルドエラーを完全解消。
+* `package.json` のビルドスクリプトを `prisma generate && next build` に設定。
+
+
+2. **管理者ログインの復旧**
+* `AdminUser` テーブルにパスワード（bcrypt ハッシュ化）を直接登録。
+
+
+3. **サイト全体の即時反映化（キャッシュ問題解消）**
+* `src/app/page.tsx` に `export const dynamic = 'force-dynamic'` を適用し、管理画面での変更が本番サイトへ即座に反映されるよう改修。
+
+
+4. **基本設定（`SettingsPage`）の改修**
+* Vercel 環境でのファイル書き込み（500 エラー）を撤廃し、Neon DB（`Setting` テーブル）へ保存する仕様に変更。
+* 「URL」入力欄を削除。
+* ファビコン仕様説明の推奨容量を **500KB 以内** に統一。
+
+
+5. **お問い合わせ返信メール送信機能（Gmail SMTP）の実装**
+* 管理画面で保存された Gmail と Google アプリパスワードを DB から取得し、Nodemailer 経由で相手のメールアドレスへ実際に送信する仕様へ修正。
+
+
+6. **写真・メディア素材管理（`PhotosPage`）の最適化**
+* **静止画像（JPEG / PNG / WebP）:** Canvas を利用してクライアント側で **約 500KB 以下（最大長辺 1200px・品質 0.72）** へ自動圧縮。
+* **GIF アニメーション:** アニメーションを壊さないよう **圧縮をスキップしてそのまま保持**（最大 5MB 対応）。
+* **動画・音声（MP4 / MP3 等）:** 最大 5MB までアップロード対応。
+* 説明文をコンパクトに配置。
+
+
+
+---
+
+## 2. 確定版主要コード一覧
+
+### ① 基本設定画面（URL欄削除 ＆ ファビコン 500KB 説明版）
+
+`src/app/admin/settings/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect } from 'react';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+
+type PhotoLibraryItem = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export default function SettingsPage() {
+  const router = useRouter();
+
+  // 設定項目の状態管理
+  const [siteTitle, setSiteTitle] = useState('BE SMILE');
+  const [adminEmail, setAdminEmail] = useState('admin@example.com');
+  const [faviconUrl, setFaviconUrl] = useState<string>('/icons/top.png');
+
+  // メール送信用設定（SMTP）ステート
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+
+  // 写真ライブラリの動的状態管理
+  const [photoLibrary, setPhotoLibrary] = useState<PhotoLibraryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // メディアライブラリ選択モーダル
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
+
+  // 🔄 データベースから基本設定 & 写真ライブラリを取得
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchData = async () => {
+      try {
+        const [resSettings, resPhotos] = await Promise.all([
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/photos', { cache: 'no-store' }),
+        ]);
+
+        if (resSettings.ok && isMounted) {
+          const dataSettings = await resSettings.json();
+          if (dataSettings) {
+            const email = dataSettings.contactEmail || 'admin@example.com';
+            setSiteTitle(dataSettings.siteTitle || 'BE SMILE');
+            setAdminEmail(email);
+            setFaviconUrl(dataSettings.mainImageUrl || '/icons/top.png');
+            setSmtpUser(dataSettings.smtpUser || email);
+            if (dataSettings.smtpPass) setSmtpPass(dataSettings.smtpPass);
+          }
+        }
+
+        if (resPhotos.ok && isMounted) {
+          const dataPhotos = await resPhotos.json();
+          const formattedPhotos: PhotoLibraryItem[] = dataPhotos.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            url: item.url,
+          }));
+          setPhotoLibrary(formattedPhotos);
+        }
+      } catch (error) {
+        console.error('設定データの取得エラー:', error);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+
+    fetchData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 編集中の画面でファビコンとタイトルをリアルタイム反映する処理
+  useEffect(() => {
+    if (faviconUrl) {
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = faviconUrl;
+    }
+
+    if (siteTitle) {
+      document.title = siteTitle;
+    }
+  }, [faviconUrl, siteTitle]);
+
+  // ★ 管理者メールアドレスの変更時に送信用メールアドレスも自動連動させるハンドラー
+  const handleAdminEmailChange = (val: string) => {
+    setAdminEmail(val);
+    setSmtpUser(val);
+  };
+
+  // ローカルファイルアップロード処理 (Base64化)
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFaviconUrl(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // データベース ＆ 設定への保存処理
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          siteTitle,
+          contactEmail: adminEmail,
+          mainImageUrl: faviconUrl,
+          smtpUser: adminEmail,
+          smtpPass,
+        }),
+      });
+
+      if (!res.ok) throw new Error('保存に失敗しました');
+
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+      if (link) {
+        link.href = faviconUrl;
+      }
+
+      alert('基本設定および送信用メール設定（SMTP）を統一して保存しました！');
+
+      router.refresh();
+    } catch (error) {
+      console.error('設定保存エラー:', error);
+      alert('設定の保存に失敗しました。');
+    }
+  };
+
+  return (
+    <div className="space-y-8 max-w-4xl">
+      {/* 1. ページタイトル */}
+      <div className="flex items-center gap-3">
+        <h1 className="text-3xl font-bold text-gray-800">基本設定</h1>
+        <Image src="/icons/settings.png" alt="歯車アイコン" width={48} height={48} />
+      </div>
+
+      {/* 2. 設定フォーム */}
+      <form onSubmit={handleSave} className="space-y-8 pt-4">
+        {/* サイトのタイトル */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            サイトのタイトル
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="text"
+              value={siteTitle}
+              onChange={(e) => setSiteTitle(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm"
+              placeholder="サイト名を入力"
+            />
+          </div>
+        </div>
+
+        {/* サイトのアイコン */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-start gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg pt-3">
+            サイトのアイコン<br />
+            <span className="text-xs text-gray-400 font-normal">（ファビコン設定）</span>
+          </label>
+
+          <div className="md:col-span-8 space-y-3">
+            <div className="flex items-center gap-6 flex-wrap">
+              <div className="w-16 h-16 rounded-full border border-gray-300 bg-white flex items-center justify-center overflow-hidden shadow-sm flex-shrink-0 p-2">
+                {faviconUrl ? (
+                  <img src={faviconUrl} alt="ファビコン" className="w-full h-full object-contain" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full border border-gray-300 bg-gray-100" />
+                )}
+              </div>
+
+              <div className="border border-gray-300 rounded-xl p-2.5 bg-gray-100 flex items-center gap-3 shadow-sm min-w-[220px]">
+                <div className="flex gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-400"></span>
+                </div>
+
+                <div className="border border-gray-300 rounded-t-lg px-3 py-1 flex items-center gap-2 bg-white shadow-xs">
+                  <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {faviconUrl ? (
+                      <img src={faviconUrl} alt="タブアイコン" className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="w-3.5 h-3.5 rounded-full border border-gray-400 bg-gray-200" />
+                    )}
+                  </div>
+
+                  <span className="text-xs font-medium text-gray-700 truncate max-w-[100px]">
+                    {siteTitle || 'サイト名'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(true)}
+                className="px-4 py-2 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 rounded-lg text-sm font-semibold shadow-sm transition"
+              >
+                📷 「写真」から選択
+              </button>
+
+              <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition">
+                ファイル選択
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {/* ★ ファビコンの推奨仕様・注意書き */}
+            <div className="bg-[#FAF8F5] border border-gray-200/80 rounded-xl p-3 text-[11px] text-gray-500 space-y-1 max-w-md">
+              <div className="font-semibold text-gray-600 flex items-center gap-1">
+                <span>ℹ️</span> ファビコンの仕様・目安
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-gray-500 pl-0.5 leading-relaxed">
+                <li><strong>表示サイズ:</strong> ブラウザのタブ上では <strong>16×16px</strong> または <strong>32×32px</strong> の極小サイズで表示されます。</li>
+                <li><strong>推奨画像サイズ:</strong> <strong>正方形（1:1）</strong>、<code>32×32px</code> 〜 <code>512×512px</code>（PNG / ICO / SVG形式）。</li>
+                <li><strong>推奨ファイル容量:</strong> <strong>500KB以内</strong>（透過PNG推奨。細かすぎる図形よりシンプルなマークが綺麗に見えます）。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* 管理者 兼 送信用メールアドレス */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            管理者＆送信用メールアドレス<br />
+            <span className="text-xs text-gray-400 font-normal">（お問い合わせ返信用 Gmail）</span>
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="email"
+              value={adminEmail}
+              onChange={(e) => handleAdminEmailChange(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+              placeholder="yozakura810114514@gmail.com"
+            />
+          </div>
+        </div>
+
+        {/* メール送信（SMTP）認証設定 */}
+        <div className="border-t border-gray-200 pt-6 space-y-6">
+          <h2 className="text-xl font-bold text-gray-800">お問い合わせ メール送信認証設定</h2>
+
+          {/* Google アプリパスワード */}
+          <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+            <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+              Google アプリパスワード<br />
+              <span className="text-xs text-gray-400 font-normal">（16桁の生成コード）</span>
+            </label>
+            <div className="md:col-span-8">
+              <input
+                type="password"
+                value={smtpPass}
+                onChange={(e) => setSmtpPass(e.target.value)}
+                className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+                placeholder="••••••••••••"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 保存ボタン */}
+        <div className="pt-6 flex justify-end max-w-md md:max-w-none border-t border-gray-200">
+          <button
+            type="submit"
+            className="px-8 py-3 bg-[#DDE7F3] hover:bg-[#c9d9ec] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+          >
+            設定を保存
+          </button>
+        </div>
+      </form>
+
+      {/* 写真ライブラリ選択モーダル */}
+      {isMediaModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 relative">
+            <button
+              onClick={() => setIsMediaModalOpen(false)}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl"
+            >
+              ✕
+            </button>
+
+            <h3 className="text-lg font-bold text-gray-800 border-b pb-3">「写真」からファビコン画像を選択</h3>
+
+            {photoLibrary.length > 0 ? (
+              <div className="grid grid-cols-3 gap-3 max-h-64 overflow-y-auto p-1">
+                {photoLibrary.map((photo) => (
+                  <div
+                    key={photo.id}
+                    onClick={() => {
+                      setFaviconUrl(photo.url);
+                      setIsMediaModalOpen(false);
+                    }}
+                    className={`border-2 rounded-xl p-2 cursor-pointer transition flex flex-col items-center hover:scale-105 ${
+                      faviconUrl === photo.url ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-contain" />
+                    </div>
+                    <span className="text-xs text-gray-600 truncate w-full text-center mt-1">{photo.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-gray-400 text-sm">
+                ライブラリに登録された画像がありません。「写真・メディア素材」画面から先に追加してください。
+              </div>
+            )}
+
+            <div className="flex justify-end pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300 transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+```
+
+---
+
+### ② 写真・メディア素材管理（500KB 圧縮 ＆ GIF 保持対応）
+
+`src/app/admin/photos/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect, Suspense } from 'react';
+import Image from 'next/image';
+import { useSearchParams } from 'next/navigation';
+
+type PhotoItem = {
+  id: string;
+  name: string;
+  type: string;
+  date: string;
+  url: string;
+  size: string;
+};
+
+const ITEMS_PER_PAGE = 5;
+
+// 画像を約500KB以下に自動圧縮（最大長辺1200px・JPEG/WebP品質0.72）
+const compressImage = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    // GIFアニメやSVGは圧縮せずそのまま維持
+    if (file.type === 'image/gif' || file.type === 'image/svg+xml') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    // 既に500KB以下のPNGは透過保持のためそのまま
+    if (file.size <= 500 * 1024 && file.type === 'image/png') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const img = new window.Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 1200;
+      const MAX_HEIGHT = 1200;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width = Math.round((width * MAX_HEIGHT) / height);
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        const mimeType = file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+        const compressedBase64 = canvas.toDataURL(mimeType, 0.72);
+        resolve(compressedBase64);
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    };
+  });
+};
+
+function PhotosContent() {
+  const searchParams = useSearchParams();
+  const targetId = searchParams.get('id');
+
+  const [photos, setPhotos] = useState<PhotoItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedPhoto, setSelectedPhoto] = useState<PhotoItem | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [newPhotoFiles, setNewPhotoFile] = useState<File[]>([]);
+  const [isUploading, setIsSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+
+  const fetchPhotos = async (forceRefresh = false) => {
+    try {
+      const fetchOption: RequestInit = forceRefresh
+        ? { cache: 'reload' }
+        : { next: { revalidate: 60 } };
+
+      const res = await fetch('/api/photos', fetchOption);
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+
+      const formattedPhotos: PhotoItem[] = data.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        type:
+          item.type ||
+          item.category ||
+          (item.url?.startsWith('data:video') || item.url?.endsWith('.mp4')
+            ? 'video'
+            : item.url?.startsWith('data:audio') || item.url?.endsWith('.mp3')
+            ? 'audio'
+            : item.url?.startsWith('data:image/gif') || item.url?.endsWith('.gif')
+            ? 'gif'
+            : 'image'),
+        url: item.url,
+        size: item.size || '0.5 MB',
+        date: new Date(item.createdAt || Date.now())
+          .toLocaleDateString('ja-JP', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          })
+          .replace(/\//g, ' '),
+      }));
+
+      setPhotos(formattedPhotos);
+
+      if (targetId) {
+        const targetIndex = formattedPhotos.findIndex((p) => p.id === targetId);
+        if (targetIndex !== -1) {
+          const calculatedPage = Math.floor(targetIndex / ITEMS_PER_PAGE) + 1;
+          setCurrentPage(calculatedPage);
+          setSelectedPhoto(formattedPhotos[targetIndex]);
+        }
+      }
+    } catch (error) {
+      console.error('写真素材の取得エラー:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    fetchPhotos();
+    return () => {
+      isMounted = false;
+    };
+  }, [targetId]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const selected = Array.from(e.target.files);
+      const validFiles: File[] = [];
+
+      for (const file of selected) {
+        const limitMB = 5;
+        if (file.size > limitMB * 1024 * 1024) {
+          alert(`「${file.name}」はサイズ制限（${limitMB}MB）を超えているため除外されました。`);
+          continue;
+        }
+        validFiles.push(file);
+      }
+
+      setNewPhotoFile(validFiles);
+    }
+  };
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  const handleAddPhotos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPhotoFiles.length === 0) {
+      alert('ファイルを選択してください。');
+      return;
+    }
+
+    setIsSaving(true);
+    setUploadProgress({ current: 0, total: newPhotoFiles.length });
+
+    try {
+      for (let i = 0; i < newPhotoFiles.length; i++) {
+        const file = newPhotoFiles[i];
+        setUploadProgress({ current: i + 1, total: newPhotoFiles.length });
+
+        let mediaType = 'image';
+        let base64Url = '';
+
+        if (file.type.startsWith('video/')) {
+          mediaType = 'video';
+          base64Url = await fileToBase64(file);
+        } else if (file.type.startsWith('audio/')) {
+          mediaType = 'audio';
+          base64Url = await fileToBase64(file);
+        } else if (file.type === 'image/gif') {
+          mediaType = 'gif';
+          base64Url = await fileToBase64(file);
+        } else {
+          base64Url = await compressImage(file);
+        }
+
+        const fileName = file.name.replace(/\.[^/.]+$/, '');
+        const approxSizeMB = (
+          (base64Url.length * (3 / 4)) /
+          (1024 * 1024)
+        ).toFixed(2);
+
+        await fetch('/api/photos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: fileName,
+            url: base64Url,
+            category: mediaType,
+            size: `${approxSizeMB} MB`,
+          }),
+        });
+      }
+
+      setIsAddModalOpen(false);
+      setNewPhotoFile([]);
+      await fetchPhotos(true);
+      alert(`${newPhotoFiles.length}件の素材を追加しました！`);
+    } catch (error) {
+      console.error('保存エラー:', error);
+      alert('素材の追加に失敗しました。');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeletePhoto = async () => {
+    if (!selectedPhoto) return;
+    if (confirm(`素材「${selectedPhoto.name}」をライブラリから削除してもよろしいですか？`)) {
+      try {
+        await fetch(`/api/photos?id=${selectedPhoto.id}`, {
+          method: 'DELETE',
+        });
+
+        setSelectedPhoto(null);
+        await fetchPhotos(true);
+        alert('素材を削除しました。');
+      } catch (error) {
+        console.error('削除エラー:', error);
+        alert('素材の削除に失敗しました。');
+      }
+    }
+  };
+
+  const totalPages = Math.ceil(photos.length / ITEMS_PER_PAGE) || 1;
+  const paginatedPhotos = photos.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-bold text-gray-800">写真・メディア素材</h1>
+          <Image src="/icons/photos.png" alt="写真アイコン" width={48} height={48} />
+        </div>
+
+        <button
+          onClick={() => {
+            setNewPhotoFile([]);
+            setIsAddModalOpen(true);
+          }}
+          className="flex items-center gap-2 px-5 py-2.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+        >
+          <span className="text-xl font-bold">＋</span> 新規素材の追加
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="grid grid-cols-12 bg-[#DDE7F3] py-3 px-6 text-gray-700 font-medium">
+          <div className="col-span-8 md:col-span-9 pl-24">ファイル名 / 種別</div>
+          <div className="col-span-4 md:col-span-3 text-right pr-6">投稿日</div>
+        </div>
+
+        <div className="divide-y divide-gray-200">
+          {isLoading ? (
+            <div className="p-12 text-center text-gray-400">読み込み中...</div>
+          ) : paginatedPhotos.length > 0 ? (
+            paginatedPhotos.map((photo) => (
+              <div
+                key={photo.id}
+                onClick={() => setSelectedPhoto(photo)}
+                className={`grid grid-cols-12 items-center p-4 hover:bg-gray-50 transition cursor-pointer ${
+                  targetId === photo.id ? 'bg-[#DAE6DC]/40 border-l-4 border-[#8fae94]' : ''
+                }`}
+              >
+                <div className="col-span-8 md:col-span-9 flex items-center gap-6">
+                  <div className="w-20 h-20 bg-gray-100 border border-gray-300 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {(photo.type === 'image' || photo.type === 'gif') && (
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-cover" />
+                    )}
+                    {photo.type === 'video' && (
+                      <div className="flex flex-col items-center justify-center text-gray-500">
+                        <span className="text-2xl">🎬</span>
+                        <span className="text-[10px] font-bold mt-1">動画</span>
+                      </div>
+                    )}
+                    {photo.type === 'audio' && (
+                      <div className="flex flex-col items-center justify-center text-gray-500">
+                        <span className="text-2xl">🎵</span>
+                        <span className="text-[10px] font-bold mt-1">音楽</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="font-medium text-gray-800 block text-base truncate max-w-xs md:max-w-md">
+                      {photo.name}
+                    </span>
+                    <span className="text-xs text-gray-400 uppercase font-semibold">
+                      {photo.type === 'gif'
+                        ? 'GIFアニメ'
+                        : photo.type === 'image'
+                        ? '画像'
+                        : photo.type === 'video'
+                        ? '動画'
+                        : '音楽'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="col-span-4 md:col-span-3 text-right pr-6 text-gray-600 font-mono text-sm">
+                  {photo.date}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="p-12 text-center text-gray-400">写真・メディア素材は登録されていません。</div>
+          )}
+        </div>
+
+        <div className="flex justify-end items-center gap-2 p-6 bg-white border-t">
+          <button onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))} disabled={currentPage === 1} className="px-2 text-gray-400 hover:text-gray-600 disabled:opacity-30">&lt;</button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+            <button key={page} onClick={() => setCurrentPage(page)} className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition ${currentPage === page ? 'bg-gray-600 text-white font-bold' : 'border border-gray-300 hover:bg-gray-100 text-gray-700'}`}>
+              {page}
+            </button>
+          ))}
+          <button onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))} disabled={currentPage === totalPages} className="px-2 text-gray-400 hover:text-gray-600 disabled:opacity-30">&gt;</button>
+        </div>
+      </div>
+
+      {isAddModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
+            <button
+              onClick={() => !isUploading && setIsAddModalOpen(false)}
+              disabled={isUploading}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl hover:text-gray-600 disabled:opacity-30"
+            >
+              ✕
+            </button>
+            <h2 className="text-xl font-bold text-gray-800">新規素材の追加</h2>
+
+            {/* 容量・自動圧縮の説明（500KB基準） */}
+            <div className="bg-[#FAF8F5] border border-gray-200 rounded-lg p-2.5 text-[11px] text-gray-500 space-y-1">
+              <div>• <strong>静止画像:</strong> 約500KB以下へ自動圧縮・最適化</div>
+              <div>• <strong>GIF・動画・音声:</strong> 最大5MBまで対応（GIFアニメは圧縮せずそのまま維持）</div>
+            </div>
+
+            <form onSubmit={handleAddPhotos} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  ファイル選択（複数選択OK）
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,video/*,audio/*"
+                  onChange={handleFileChange}
+                  disabled={isUploading}
+                  className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#DAE6DC] file:text-gray-800 cursor-pointer disabled:opacity-50"
+                />
+              </div>
+
+              {newPhotoFiles.length > 0 && (
+                <div className="p-2.5 bg-gray-50 border rounded-xl max-h-32 overflow-y-auto space-y-1">
+                  <div className="text-[11px] font-bold text-gray-600 border-b pb-1 mb-1">
+                    選択中 ({newPhotoFiles.length}件):
+                  </div>
+                  {newPhotoFiles.map((f, idx) => (
+                    <div key={idx} className="text-[11px] text-gray-700 truncate flex justify-between">
+                      <span className="truncate">• {f.name}</span>
+                      <span className="text-gray-400 ml-2 flex-shrink-0">{(f.size / (1024 * 1024)).toFixed(2)} MB</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {isUploading && (
+                <div className="space-y-1.5 text-center py-1">
+                  <div className="text-xs font-bold text-gray-700">
+                    アップロード＆500KB最適化中... ({uploadProgress.current} / {uploadProgress.total})
+                  </div>
+                  <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                    <div
+                      className="bg-[#8fae94] h-full transition-all duration-200"
+                      style={{
+                        width: `${(uploadProgress.current / uploadProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  disabled={isUploading}
+                  className="px-3.5 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-xs font-medium disabled:opacity-50"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUploading || newPhotoFiles.length === 0}
+                  className="px-4 py-1.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-bold rounded-lg shadow-xs transition text-xs disabled:opacity-50"
+                >
+                  {isUploading ? '保存中...' : `${newPhotoFiles.length > 0 ? `${newPhotoFiles.length}件を追加` : '追加する'}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedPhoto && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
+            <button onClick={() => setSelectedPhoto(null)} className="absolute top-4 right-4 text-gray-400 font-bold text-xl">✕</button>
+            <h2 className="text-xl font-bold text-gray-800">素材の詳細・プレビュー</h2>
+
+            <div className="w-full h-52 bg-gray-100 border rounded-xl flex items-center justify-center overflow-hidden">
+              {(selectedPhoto.type === 'image' || selectedPhoto.type === 'gif') && (
+                <img src={selectedPhoto.url} alt={selectedPhoto.name} className="w-full h-full object-contain" />
+              )}
+              {selectedPhoto.type === 'video' && (
+                <video src={selectedPhoto.url} controls className="w-full h-full object-contain bg-black" />
+              )}
+              {selectedPhoto.type === 'audio' && (
+                <div className="w-full px-6 flex flex-col items-center gap-3">
+                  <span className="text-4xl">🎵</span>
+                  <audio src={selectedPhoto.url} controls className="w-full" />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 text-sm text-gray-600 border-t pt-3">
+              <div><strong className="text-gray-800">ファイル名:</strong> {selectedPhoto.name}</div>
+              <div><strong className="text-gray-800">投稿日:</strong> {selectedPhoto.date}</div>
+              <div><strong className="text-gray-800">ファイルサイズ:</strong> {selectedPhoto.size}</div>
+            </div>
+
+            <div className="flex justify-between items-center pt-4 border-t">
+              <button
+                type="button"
+                onClick={handleDeletePhoto}
+                className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 font-medium rounded-lg text-sm transition border border-red-200"
+              >
+                🗑 削除する
+              </button>
+              <button onClick={() => setSelectedPhoto(null)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function PhotosPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          写真素材画面を読み込み中...
+        </div>
+      }
+    >
+      <PhotosContent />
+    </Suspense>
+  );
+}
+
+```
+
+---
+
+### ③ お問い合わせ返信 ＆ 実メール送信 API
+
+`src/app/api/inquiries/route.ts`
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import nodemailer from 'nodemailer';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const type = searchParams.get('type');
+  const limit = Number(searchParams.get('limit')) || 50;
+
+  try {
+    if (type === 'settings') {
+      const settings = await prisma.topSetting.findUnique({
+        where: { id: 'inquiry_settings' },
+      });
+      return NextResponse.json(settings);
+    }
+
+    const inquiries = await prisma.inquiry.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        message: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    return NextResponse.json(inquiries);
+  } catch (error) {
+    console.error('GET Inquiries Error:', error);
+    return NextResponse.json({ error: 'データ取得エラー' }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { companyName, name, email, content } = body;
+
+    const fullMessage = companyName
+      ? `【会社名】${companyName}\n\n${content || ''}`
+      : content || '';
+
+    const newInquiry = await prisma.inquiry.create({
+      data: {
+        name: name || '匿名',
+        email: email || '',
+        message: fullMessage,
+        status: '未対応',
+      },
+    });
+
+    try {
+      await prisma.announcement.create({
+        data: {
+          title: `【お問い合わせ】${name || '匿名'}様より新しいメッセージが届きました`,
+          category: '重要',
+          content: `差出人: ${name || '匿名'} (${email || 'メールアドレスなし'})\n\n本文:\n${fullMessage}`,
+        },
+      });
+    } catch (noticeErr) {
+      console.warn('お知らせ自動生成エラー:', noticeErr);
+    }
+
+    return NextResponse.json(newInquiry, { status: 201 });
+  } catch (error) {
+    console.error('POST Inquiry Error:', error);
+    return NextResponse.json({ error: '送信失敗' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+
+    if (body.isSettings) {
+      const updatedSettings = await prisma.topSetting.upsert({
+        where: { id: 'inquiry_settings' },
+        update: { heroSubtitle: JSON.stringify(body.settingsData) },
+        create: {
+          id: 'inquiry_settings',
+          heroSubtitle: JSON.stringify(body.settingsData),
+        },
+      });
+      return NextResponse.json(updatedSettings);
+    }
+
+    if (body.isUserReply && body.userReplyText) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---USER_REPLY---\n${body.userReplyText}`;
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '未対応',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    if (body.replyText && body.email) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---ADMIN_REPLY---\n${body.replyText}`;
+
+      let smtpUser = process.env.SMTP_USER || '';
+      let smtpPass = process.env.SMTP_PASS || '';
+      let contactEmail = smtpUser;
+
+      try {
+        const siteSetting = await prisma.setting.findFirst();
+        if (siteSetting) {
+          if (siteSetting.smtpUser) smtpUser = siteSetting.smtpUser;
+          if (siteSetting.smtpPass) smtpPass = siteSetting.smtpPass;
+          if (siteSetting.contactEmail) contactEmail = siteSetting.contactEmail;
+        }
+      } catch (e) {
+        console.warn('Settingテーブル取得スキップ:', e);
+      }
+
+      smtpPass = (smtpPass || '').replace(/^["']|["']$/g, '').trim();
+      smtpUser = (smtpUser || '').trim();
+
+      if (!smtpUser || !smtpPass) {
+        return NextResponse.json(
+          { error: '基本設定で「送信用メールアドレス」と「Googleアプリパスワード」が設定されていません。' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"BeSmile 事務局" <${smtpUser}>`,
+          replyTo: contactEmail || smtpUser,
+          to: body.email,
+          subject: `【BeSmile】お問い合わせへのご返信`,
+          text: body.replyText,
+        });
+      } catch (mailError: any) {
+        console.error('[MAIL ERROR] 実メール送信失敗:', mailError);
+        return NextResponse.json(
+          { error: `メール送信エラー: ${mailError.message || mailError}` },
+          { status: 500 }
+        );
+      }
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '対応済み',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    const updatedInquiry = await prisma.inquiry.update({
+      where: { id: body.id },
+      data: { status: body.status },
+    });
+
+    return NextResponse.json(updatedInquiry);
+  } catch (error: any) {
+    console.error('PUT Inquiry Error:', error);
+    return NextResponse.json({ error: error.message || '更新失敗' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'IDが必要です' }, { status: 400 });
+  }
+
+  try {
+    await prisma.inquiry.delete({
+      where: { id },
+    });
+    return NextResponse.json({ message: '削除完了' });
+  } catch (error) {
+    console.error('DELETE Inquiry Error:', error);
+    return NextResponse.json({ error: '削除失敗' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+## 3. 本番デプロイコマンド
+
+```bash
+cd /Users/user/besmile-app
+git add .
+git commit -m "Optimize photo compression and finalize basic settings"
+git push origin main
+
+```
+
+
+
+
+
+
+
+
+
+本プロジェクトで実施したすべての実装・改修・最適化内容を、最新の確定版コードとともに整理してまとめました。
+
+---
+
+# 📋 BeSmile アプリ 全体開発・改修総合まとめ
+
+---
+
+## 1. 実施した改修一覧と目的
+
+* **Vercel 本番ビルド対応（Suspense ラップ）**
+* `useSearchParams()` を使用するページ（写真、クリエイター、作品等）を `<Suspense>` でラップし、ビルドエラーを完全解消。
+
+
+* **管理者ログインの復旧**
+* `AdminUser` テーブルに bcrypt ハッシュ化パスワードを直接投入し、ログイン認証を正常化。
+
+
+* **基本設定（`SettingsPage`）のサーバーレス最適化 ＆ UI 改修**
+* Vercel の読み取り専用環境でエラーとなる `.env.local` への `fs` 書き込みを撤廃し、Neon DB（`Setting` テーブル）へ保存する構成へ一本化。
+* 不要な「URL」入力欄を削除。
+* ファビコンのアップロード制限を **100KB 以内** に設定し、超過時の警告バリデーションおよび説明文を更新。
+
+
+* **SEO・検索結果・ブラウザタブ表示の強化（`src/app/layout.tsx`）**
+* `generateMetadata` で動的タイトル・OGP・ファビコンを設定し、Google 検索の青色リンク大見出しやブラウザタブにサイトタイトルが確実に反映されるよう改修。
+
+
+* **サイト全体の即時反映化（キャッシュ問題解消）**
+* `src/app/page.tsx` および `src/app/layout.tsx` に `export const dynamic = 'force-dynamic'` を適用し、管理画面での変更が本番サイトへ即座に反映されるよう変更。
+
+
+* **お問い合わせ返信メール送信機能（Gmail SMTP）の実装**
+* 管理画面の基本設定で保存された Gmail と Google アプリパスワードを DB から取得し、Nodemailer 経由で相手のメールアドレスへ実際に送信する仕様へ修正。
+
+
+* **写真・メディア素材管理（`PhotosPage`）の最適化**
+* **静止画像（JPEG / PNG / WebP）:** Canvas を利用してクライアント側で **約 500KB 以下（最大長辺 1200px・品質 0.72）** へ自動圧縮。
+* **GIF アニメーション:** アニメーションを壊さないよう **圧縮をスキップしてそのまま保持**（最大 5MB 対応）。
+* **動画・音声（MP4 / MP3 等）:** 最大 5MB までアップロード対応。
+
+
+
+---
+
+## 2. 確定版主要コード一覧
+
+### ① 基本設定画面（100KB制限 ＆ URL削除版）
+
+`src/app/admin/settings/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect } from 'react';
+import Image from 'next/image';
+import { useRouter } from 'next/navigation';
+
+type PhotoLibraryItem = {
+  id: string;
+  name: string;
+  url: string;
+};
+
+export default function SettingsPage() {
+  const router = useRouter();
+
+  // 設定項目の状態管理
+  const [siteTitle, setSiteTitle] = useState('BE SMILE');
+  const [adminEmail, setAdminEmail] = useState('admin@example.com');
+  const [faviconUrl, setFaviconUrl] = useState<string>('/icons/top.png');
+
+  // メール送信用設定（SMTP）ステート
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+
+  // 写真ライブラリの動的状態管理
+  const [photoLibrary, setPhotoLibrary] = useState<PhotoLibraryItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // メディアライブラリ選択モーダル
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
+
+  // 🔄 データベースから基本設定 & 写真ライブラリを取得
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchData = async () => {
+      try {
+        const [resSettings, resPhotos] = await Promise.all([
+          fetch('/api/settings', { cache: 'no-store' }),
+          fetch('/api/photos', { cache: 'no-store' }),
+        ]);
+
+        if (resSettings.ok && isMounted) {
+          const dataSettings = await resSettings.json();
+          if (dataSettings) {
+            const email = dataSettings.contactEmail || 'admin@example.com';
+            setSiteTitle(dataSettings.siteTitle || 'BE SMILE');
+            setAdminEmail(email);
+            setFaviconUrl(dataSettings.mainImageUrl || '/icons/top.png');
+            setSmtpUser(dataSettings.smtpUser || email);
+            if (dataSettings.smtpPass) setSmtpPass(dataSettings.smtpPass);
+          }
+        }
+
+        if (resPhotos.ok && isMounted) {
+          const dataPhotos = await resPhotos.json();
+          const formattedPhotos: PhotoLibraryItem[] = dataPhotos.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            url: item.url,
+          }));
+          setPhotoLibrary(formattedPhotos);
+        }
+      } catch (error) {
+        console.error('設定データの取得エラー:', error);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+
+    fetchData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 編集中の画面でファビコンとタイトルをリアルタイム反映する処理
+  useEffect(() => {
+    if (faviconUrl) {
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = 'icon';
+        document.head.appendChild(link);
+      }
+      link.href = faviconUrl;
+    }
+
+    if (siteTitle) {
+      document.title = siteTitle;
+    }
+  }, [faviconUrl, siteTitle]);
+
+  // ★ 管理者メールアドレスの変更時に送信用メールアドレスも自動連動させるハンドラー
+  const handleAdminEmailChange = (val: string) => {
+    setAdminEmail(val);
+    setSmtpUser(val);
+  };
+
+  // ★ ローカルファイルアップロード処理 (100KB制限バリデーション ＆ Base64化)
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 100 * 1024) {
+        const actualKB = Math.round(file.size / 1024);
+        alert(`ファイル容量が大きすぎます（${actualKB}KB）。\nファビコン画像は 100KB 以下のファイルを選択してください。`);
+        e.target.value = '';
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        setFaviconUrl(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // データベース ＆ 設定への保存処理
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          siteTitle,
+          contactEmail: adminEmail,
+          mainImageUrl: faviconUrl,
+          smtpUser: adminEmail,
+          smtpPass,
+        }),
+      });
+
+      if (!res.ok) throw new Error('保存に失敗しました');
+
+      let link: HTMLLinkElement | null =
+        document.querySelector("link[rel='icon']") ||
+        document.querySelector("link[rel='shortcut icon']");
+      if (link) {
+        link.href = faviconUrl;
+      }
+
+      alert('基本設定および送信用メール設定（SMTP）を統一して保存しました！');
+
+      router.refresh();
+    } catch (error) {
+      console.error('設定保存エラー:', error);
+      alert('設定の保存に失敗しました。');
+    }
+  };
+
+  return (
+    <div className="space-y-8 max-w-4xl">
+      {/* 1. ページタイトル */}
+      <div className="flex items-center gap-3">
+        <h1 className="text-3xl font-bold text-gray-800">基本設定</h1>
+        <Image src="/icons/settings.png" alt="歯車アイコン" width={48} height={48} />
+      </div>
+
+      {/* 2. 設定フォーム */}
+      <form onSubmit={handleSave} className="space-y-8 pt-4">
+        {/* サイトのタイトル */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            サイトのタイトル
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="text"
+              value={siteTitle}
+              onChange={(e) => setSiteTitle(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm"
+              placeholder="サイト名を入力"
+            />
+          </div>
+        </div>
+
+        {/* サイトのアイコン */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-start gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg pt-3">
+            サイトのアイコン<br />
+            <span className="text-xs text-gray-400 font-normal">（ファビコン設定）</span>
+          </label>
+
+          <div className="md:col-span-8 space-y-3">
+            <div className="flex items-center gap-6 flex-wrap">
+              <div className="w-16 h-16 rounded-full border border-gray-300 bg-white flex items-center justify-center overflow-hidden shadow-sm flex-shrink-0 p-2">
+                {faviconUrl ? (
+                  <img src={faviconUrl} alt="ファビコン" className="w-full h-full object-contain" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full border border-gray-300 bg-gray-100" />
+                )}
+              </div>
+
+              <div className="border border-gray-300 rounded-xl p-2.5 bg-gray-100 flex items-center gap-3 shadow-sm min-w-[220px]">
+                <div className="flex gap-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-green-400"></span>
+                </div>
+
+                <div className="border border-gray-300 rounded-t-lg px-3 py-1 flex items-center gap-2 bg-white shadow-xs">
+                  <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {faviconUrl ? (
+                      <img src={faviconUrl} alt="タブアイコン" className="w-full h-full object-contain" />
+                    ) : (
+                      <div className="w-3.5 h-3.5 rounded-full border border-gray-400 bg-gray-200" />
+                    )}
+                  </div>
+
+                  <span className="text-xs font-medium text-gray-700 truncate max-w-[100px]">
+                    {siteTitle || 'サイト名'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(true)}
+                className="px-4 py-2 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 rounded-lg text-sm font-semibold shadow-sm transition"
+              >
+                📷 「写真」から選択
+              </button>
+
+              <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition">
+                ファイル選択
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {/* ★ ファビコンの推奨仕様・注意書き */}
+            <div className="bg-[#FAF8F5] border border-gray-200/80 rounded-xl p-3 text-[11px] text-gray-500 space-y-1 max-w-md">
+              <div className="font-semibold text-gray-600 flex items-center gap-1">
+                <span>ℹ️</span> ファビコンの仕様・目安
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-gray-500 pl-0.5 leading-relaxed">
+                <li><strong>表示サイズ:</strong> ブラウザのタブ上では <strong>16×16px</strong> または <strong>32×32px</strong> の極小サイズで表示されます。</li>
+                <li><strong>推奨画像サイズ:</strong> <strong>正方形（1:1）</strong>、<code>32×32px</code> 〜 <code>512×512px</code>（PNG / ICO / SVG形式）。</li>
+                <li><strong>容量制限:</strong> <strong>100KB以内</strong>（透過PNG推奨。細かすぎる図形よりシンプルなマークが綺麗に見えます）。</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* 管理者 兼 送信用メールアドレス */}
+        <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+          <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+            管理者＆送信用メールアドレス<br />
+            <span className="text-xs text-gray-400 font-normal">（お問い合わせ返信用 Gmail）</span>
+          </label>
+          <div className="md:col-span-8">
+            <input
+              type="email"
+              value={adminEmail}
+              onChange={(e) => handleAdminEmailChange(e.target.value)}
+              className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+              placeholder="yozakura810114514@gmail.com"
+            />
+          </div>
+        </div>
+
+        {/* メール送信（SMTP）認証設定 */}
+        <div className="border-t border-gray-200 pt-6 space-y-6">
+          <h2 className="text-xl font-bold text-gray-800">お問い合わせ メール送信認証設定</h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 items-center gap-4">
+            <label className="md:col-span-4 text-gray-700 font-medium text-lg">
+              Google アプリパスワード<br />
+              <span className="text-xs text-gray-400 font-normal">（16桁の生成コード）</span>
+            </label>
+            <div className="md:col-span-8">
+              <input
+                type="password"
+                value={smtpPass}
+                onChange={(e) => setSmtpPass(e.target.value)}
+                className="w-full max-w-md p-3 bg-white rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 shadow-sm font-mono text-sm"
+                placeholder="••••••••••••"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 保存ボタン */}
+        <div className="pt-6 flex justify-end max-w-md md:max-w-none border-t border-gray-200">
+          <button
+            type="submit"
+            className="px-8 py-3 bg-[#DDE7F3] hover:bg-[#c9d9ec] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+          >
+            設定を保存
+          </button>
+        </div>
+      </form>
+
+      {/* 写真ライブラリ選択モーダル */}
+      {isMediaModalOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 relative">
+            <button
+              onClick={() => setIsMediaModalOpen(false)}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl"
+            >
+              ✕
+            </button>
+
+            <h3 className="text-lg font-bold text-gray-800 border-b pb-3">「写真」からファビコン画像を選択</h3>
+
+            {photoLibrary.length > 0 ? (
+              <div className="grid grid-cols-3 gap-3 max-h-64 overflow-y-auto p-1">
+                {photoLibrary.map((photo) => (
+                  <div
+                    key={photo.id}
+                    onClick={() => {
+                      setFaviconUrl(photo.url);
+                      setIsMediaModalOpen(false);
+                    }}
+                    className={`border-2 rounded-xl p-2 cursor-pointer transition flex flex-col items-center hover:scale-105 ${
+                      faviconUrl === photo.url ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-contain" />
+                    </div>
+                    <span className="text-xs text-gray-600 truncate w-full text-center mt-1">{photo.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-gray-400 text-sm">
+                ライブラリに登録された画像がありません。「写真・メディア素材」画面から先に追加してください。
+              </div>
+            )}
+
+            <div className="flex justify-end pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => setIsMediaModalOpen(false)}
+                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300 transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+```
+
+---
+
+### ② SEO・ブラウザタブタイトル・ファビコン動的設定
+
+`src/app/layout.tsx`
+
+```tsx
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import { prisma } from "@/lib/prisma";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+// 管理画面で変更したタイトル・ファビコンが本番に即時反映されるように設定
+export const dynamic = "force-dynamic";
+
+// 🔄 データベースからサイトタイトルとファビコンURLを動的に取得してメタデータを生成
+export async function generateMetadata(): Promise<Metadata> {
+  try {
+    const setting = await prisma.setting.findFirst();
+    const siteTitle = setting?.siteTitle || "BE SMILE";
+    const faviconUrl = setting?.mainImageUrl || "/icons/top.png";
+    const description =
+      setting?.heroSubtitle ||
+      "BeSmile（ビースマイル）は映像・グラフィック・Web制作を行うクリエイター特化型の就労継続支援A型事業所です。";
+
+    return {
+      // ブラウザのタブ名 ＆ Google検索の青い大見出しリンクに表示
+      title: {
+        default: siteTitle,
+        template: `%s | ${siteTitle}`,
+      },
+      description: description,
+
+      // ファビコン（タブのアイコン）
+      icons: {
+        icon: [
+          {
+            url: faviconUrl,
+          },
+        ],
+        shortcut: faviconUrl,
+        apple: faviconUrl,
+      },
+
+      // SNSシェア・Googleリッチリザルト用（OGP）
+      openGraph: {
+        title: siteTitle,
+        description: description,
+        siteName: siteTitle,
+        images: [
+          {
+            url: faviconUrl,
+            width: 800,
+            height: 800,
+            alt: siteTitle,
+          },
+        ],
+        locale: "ja_JP",
+        type: "website",
+      },
+      twitter: {
+        card: "summary_large_image",
+        title: siteTitle,
+        description: description,
+        images: [faviconUrl],
+      },
+    };
+  } catch (error) {
+    return {
+      title: "BE SMILE",
+      description: "BeSmile クリエイター特化型就労継続支援A型事業所",
+      icons: {
+        icon: "/icons/top.png",
+      },
+    };
+  }
+}
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html
+      lang="ja"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
+      <body className="min-h-full flex flex-col">{children}</body>
+    </html>
+  );
+}
+
+```
+
+---
+
+### ③ 写真・メディア素材管理（500KB 自動圧縮 ＆ GIF 保持対応）
+
+`src/app/admin/photos/page.tsx`
+
+```tsx
+'use client';
+
+import { useState, useEffect, Suspense } from 'react';
+import Image from 'next/image';
+import { useSearchParams } from 'next/navigation';
+
+type PhotoItem = {
+  id: string;
+  name: string;
+  type: string;
+  date: string;
+  url: string;
+  size: string;
+};
+
+const ITEMS_PER_PAGE = 5;
+
+// 画像を約500KB以下に自動圧縮（最大長辺1200px・JPEG/WebP品質0.72）
+const compressImage = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    // GIFアニメやSVGは圧縮せずそのまま維持
+    if (file.type === 'image/gif' || file.type === 'image/svg+xml') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    // 既に500KB以下のPNGは透過保持のためそのまま
+    if (file.size <= 500 * 1024 && file.type === 'image/png') {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const img = new window.Image();
+    const url = URL.createObjectURL(file);
+    img.src = url;
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      const MAX_WIDTH = 1200;
+      const MAX_HEIGHT = 1200;
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height = Math.round((height * MAX_WIDTH) / width);
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width = Math.round((width * MAX_HEIGHT) / height);
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, width, height);
+        const mimeType = file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+        const compressedBase64 = canvas.toDataURL(mimeType, 0.72);
+        resolve(compressedBase64);
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsDataURL(file);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    };
+  });
+};
+
+function PhotosContent() {
+  const searchParams = useSearchParams();
+  const targetId = searchParams.get('id');
+
+  const [photos, setPhotos] = useState<PhotoItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [selectedPhoto, setSelectedPhoto] = useState<PhotoItem | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [newPhotoFiles, setNewPhotoFile] = useState<File[]>([]);
+  const [isUploading, setIsSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({ current: 0, total: 0 });
+
+  const fetchPhotos = async (forceRefresh = false) => {
+    try {
+      const fetchOption: RequestInit = forceRefresh
+        ? { cache: 'reload' }
+        : { next: { revalidate: 60 } };
+
+      const res = await fetch('/api/photos', fetchOption);
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+
+      const formattedPhotos: PhotoItem[] = data.map((item: any) => ({
+        id: item.id,
+        name: item.name,
+        type:
+          item.type ||
+          item.category ||
+          (item.url?.startsWith('data:video') || item.url?.endsWith('.mp4')
+            ? 'video'
+            : item.url?.startsWith('data:audio') || item.url?.endsWith('.mp3')
+            ? 'audio'
+            : item.url?.startsWith('data:image/gif') || item.url?.endsWith('.gif')
+            ? 'gif'
+            : 'image'),
+        url: item.url,
+        size: item.size || '0.5 MB',
+        date: new Date(item.createdAt || Date.now())
+          .toLocaleDateString('ja-JP', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          })
+          .replace(/\//g, ' '),
+      }));
+
+      setPhotos(formattedPhotos);
+
+      if (targetId) {
+        const targetIndex = formattedPhotos.findIndex((p) => p.id === targetId);
+        if (targetIndex !== -1) {
+          const calculatedPage = Math.floor(targetIndex / ITEMS_PER_PAGE) + 1;
+          setCurrentPage(calculatedPage);
+          setSelectedPhoto(formattedPhotos[targetIndex]);
+        }
+      }
+    } catch (error) {
+      console.error('写真素材の取得エラー:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    fetchPhotos();
+    return () => {
+      isMounted = false;
+    };
+  }, [targetId]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const selected = Array.from(e.target.files);
+      const validFiles: File[] = [];
+
+      for (const file of selected) {
+        const limitMB = 5;
+        if (file.size > limitMB * 1024 * 1024) {
+          alert(`「${file.name}」はサイズ制限（${limitMB}MB）を超えているため除外されました。`);
+          continue;
+        }
+        validFiles.push(file);
+      }
+
+      setNewPhotoFile(validFiles);
+    }
+  };
+
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  const handleAddPhotos = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPhotoFiles.length === 0) {
+      alert('ファイルを選択してください。');
+      return;
+    }
+
+    setIsSaving(true);
+    setUploadProgress({ current: 0, total: newPhotoFiles.length });
+
+    try {
+      for (let i = 0; i < newPhotoFiles.length; i++) {
+        const file = newPhotoFiles[i];
+        setUploadProgress({ current: i + 1, total: newPhotoFiles.length });
+
+        let mediaType = 'image';
+        let base64Url = '';
+
+        if (file.type.startsWith('video/')) {
+          mediaType = 'video';
+          base64Url = await fileToBase64(file);
+        } else if (file.type.startsWith('audio/')) {
+          mediaType = 'audio';
+          base64Url = await fileToBase64(file);
+        } else if (file.type === 'image/gif') {
+          mediaType = 'gif';
+          base64Url = await fileToBase64(file);
+        } else {
+          base64Url = await compressImage(file);
+        }
+
+        const fileName = file.name.replace(/\.[^/.]+$/, '');
+        const approxSizeMB = (
+          (base64Url.length * (3 / 4)) /
+          (1024 * 1024)
+        ).toFixed(2);
+
+        await fetch('/api/photos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: fileName,
+            url: base64Url,
+            category: mediaType,
+            size: `${approxSizeMB} MB`,
+          }),
+        });
+      }
+
+      setIsAddModalOpen(false);
+      setNewPhotoFile([]);
+      await fetchPhotos(true);
+      alert(`${newPhotoFiles.length}件の素材を追加しました！`);
+    } catch (error) {
+      console.error('保存エラー:', error);
+      alert('素材の追加に失敗しました。');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeletePhoto = async () => {
+    if (!selectedPhoto) return;
+    if (confirm(`素材「${selectedPhoto.name}」をライブラリから削除してもよろしいですか？`)) {
+      try {
+        await fetch(`/api/photos?id=${selectedPhoto.id}`, {
+          method: 'DELETE',
+        });
+
+        setSelectedPhoto(null);
+        await fetchPhotos(true);
+        alert('素材を削除しました。');
+      } catch (error) {
+        console.error('削除エラー:', error);
+        alert('素材の削除に失敗しました。');
+      }
+    }
+  };
+
+  const totalPages = Math.ceil(photos.length / ITEMS_PER_PAGE) || 1;
+  const paginatedPhotos = photos.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-bold text-gray-800">写真・メディア素材</h1>
+          <Image src="/icons/photos.png" alt="写真アイコン" width={48} height={48} />
+        </div>
+
+        <button
+          onClick={() => {
+            setNewPhotoFile([]);
+            setIsAddModalOpen(true);
+          }}
+          className="flex items-center gap-2 px-5 py-2.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-semibold rounded-xl shadow-sm transition-all duration-200 hover:-translate-y-0.5"
+        >
+          <span className="text-xl font-bold">＋</span> 新規素材の追加
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="grid grid-cols-12 bg-[#DDE7F3] py-3 px-6 text-gray-700 font-medium">
+          <div className="col-span-8 md:col-span-9 pl-24">ファイル名 / 種別</div>
+          <div className="col-span-4 md:col-span-3 text-right pr-6">投稿日</div>
+        </div>
+
+        <div className="divide-y divide-gray-200">
+          {isLoading ? (
+            <div className="p-12 text-center text-gray-400">読み込み中...</div>
+          ) : paginatedPhotos.length > 0 ? (
+            paginatedPhotos.map((photo) => (
+              <div
+                key={photo.id}
+                onClick={() => setSelectedPhoto(photo)}
+                className={`grid grid-cols-12 items-center p-4 hover:bg-gray-50 transition cursor-pointer ${
+                  targetId === photo.id ? 'bg-[#DAE6DC]/40 border-l-4 border-[#8fae94]' : ''
+                }`}
+              >
+                <div className="col-span-8 md:col-span-9 flex items-center gap-6">
+                  <div className="w-20 h-20 bg-gray-100 border border-gray-300 rounded-lg flex-shrink-0 flex items-center justify-center overflow-hidden">
+                    {(photo.type === 'image' || photo.type === 'gif') && (
+                      <img src={photo.url} alt={photo.name} className="w-full h-full object-cover" />
+                    )}
+                    {photo.type === 'video' && (
+                      <div className="flex flex-col items-center justify-center text-gray-500">
+                        <span className="text-2xl">🎬</span>
+                        <span className="text-[10px] font-bold mt-1">動画</span>
+                      </div>
+                    )}
+                    {photo.type === 'audio' && (
+                      <div className="flex flex-col items-center justify-center text-gray-500">
+                        <span className="text-2xl">🎵</span>
+                        <span className="text-[10px] font-bold mt-1">音楽</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="font-medium text-gray-800 block text-base truncate max-w-xs md:max-w-md">
+                      {photo.name}
+                    </span>
+                    <span className="text-xs text-gray-400 uppercase font-semibold">
+                      {photo.type === 'gif'
+                        ? 'GIFアニメ'
+                        : photo.type === 'image'
+                        ? '画像'
+                        : photo.type === 'video'
+                        ? '動画'
+                        : '音楽'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="col-span-4 md:col-span-3 text-right pr-6 text-gray-600 font-mono text-sm">
+                  {photo.date}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="p-12 text-center text-gray-400">写真・メディア素材は登録されていません。</div>
+          )}
+        </div>
+
+        <div className="flex justify-end items-center gap-2 p-6 bg-white border-t">
+          <button onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))} disabled={currentPage === 1} className="px-2 text-gray-400 hover:text-gray-600 disabled:opacity-30">&lt;</button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+            <button key={page} onClick={() => setCurrentPage(page)} className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition ${currentPage === page ? 'bg-gray-600 text-white font-bold' : 'border border-gray-300 hover:bg-gray-100 text-gray-700'}`}>
+              {page}
+            </button>
+          ))}
+          <button onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))} disabled={currentPage === totalPages} className="px-2 text-gray-400 hover:text-gray-600 disabled:opacity-30">&gt;</button>
+        </div>
+      </div>
+
+      {isAddModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
+            <button
+              onClick={() => !isUploading && setIsAddModalOpen(false)}
+              disabled={isUploading}
+              className="absolute top-4 right-4 text-gray-400 font-bold text-xl hover:text-gray-600 disabled:opacity-30"
+            >
+              ✕
+            </button>
+            <h2 className="text-xl font-bold text-gray-800">新規素材の追加</h2>
+
+            {/* 容量・自動圧縮の説明 */}
+            <div className="bg-[#FAF8F5] border border-gray-200 rounded-lg p-2.5 text-[11px] text-gray-500 space-y-1">
+              <div>• <strong>静止画像:</strong> 約500KB以下へ自動圧縮・最適化</div>
+              <div>• <strong>GIF・動画・音声:</strong> 最大5MBまで対応（GIFアニメは圧縮せずそのまま維持）</div>
+            </div>
+
+            <form onSubmit={handleAddPhotos} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">
+                  ファイル選択（複数選択OK）
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,video/*,audio/*"
+                  onChange={handleFileChange}
+                  disabled={isUploading}
+                  className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#DAE6DC] file:text-gray-800 cursor-pointer disabled:opacity-50"
+                />
+              </div>
+
+              {newPhotoFiles.length > 0 && (
+                <div className="p-2.5 bg-gray-50 border rounded-xl max-h-32 overflow-y-auto space-y-1">
+                  <div className="text-[11px] font-bold text-gray-600 border-b pb-1 mb-1">
+                    選択中 ({newPhotoFiles.length}件):
+                  </div>
+                  {newPhotoFiles.map((f, idx) => (
+                    <div key={idx} className="text-[11px] text-gray-700 truncate flex justify-between">
+                      <span className="truncate">• {f.name}</span>
+                      <span className="text-gray-400 ml-2 flex-shrink-0">{(f.size / (1024 * 1024)).toFixed(2)} MB</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {isUploading && (
+                <div className="space-y-1.5 text-center py-1">
+                  <div className="text-xs font-bold text-gray-700">
+                    アップロード＆500KB最適化中... ({uploadProgress.current} / {uploadProgress.total})
+                  </div>
+                  <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                    <div
+                      className="bg-[#8fae94] h-full transition-all duration-200"
+                      style={{
+                        width: `${(uploadProgress.current / uploadProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  disabled={isUploading}
+                  className="px-3.5 py-1.5 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition text-xs font-medium disabled:opacity-50"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUploading || newPhotoFiles.length === 0}
+                  className="px-4 py-1.5 bg-[#DAE6DC] hover:bg-[#c8d8ca] text-gray-800 font-bold rounded-lg shadow-xs transition text-xs disabled:opacity-50"
+                >
+                  {isUploading ? '保存中...' : `${newPhotoFiles.length > 0 ? `${newPhotoFiles.length}件を追加` : '追加する'}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedPhoto && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
+            <button onClick={() => setSelectedPhoto(null)} className="absolute top-4 right-4 text-gray-400 font-bold text-xl">✕</button>
+            <h2 className="text-xl font-bold text-gray-800">素材の詳細・プレビュー</h2>
+
+            <div className="w-full h-52 bg-gray-100 border rounded-xl flex items-center justify-center overflow-hidden">
+              {(selectedPhoto.type === 'image' || selectedPhoto.type === 'gif') && (
+                <img src={selectedPhoto.url} alt={selectedPhoto.name} className="w-full h-full object-contain" />
+              )}
+              {selectedPhoto.type === 'video' && (
+                <video src={selectedPhoto.url} controls className="w-full h-full object-contain bg-black" />
+              )}
+              {selectedPhoto.type === 'audio' && (
+                <div className="w-full px-6 flex flex-col items-center gap-3">
+                  <span className="text-4xl">🎵</span>
+                  <audio src={selectedPhoto.url} controls className="w-full" />
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 text-sm text-gray-600 border-t pt-3">
+              <div><strong className="text-gray-800">ファイル名:</strong> {selectedPhoto.name}</div>
+              <div><strong className="text-gray-800">投稿日:</strong> {selectedPhoto.date}</div>
+              <div><strong className="text-gray-800">ファイルサイズ:</strong> {selectedPhoto.size}</div>
+            </div>
+
+            <div className="flex justify-between items-center pt-4 border-t">
+              <button
+                type="button"
+                onClick={handleDeletePhoto}
+                className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 font-medium rounded-lg text-sm transition border border-red-200"
+              >
+                🗑 削除する
+              </button>
+              <button onClick={() => setSelectedPhoto(null)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function PhotosPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="p-12 text-center text-gray-400">
+          写真素材画面を読み込み中...
+        </div>
+      }
+    >
+      <PhotosContent />
+    </Suspense>
+  );
+}
+
+```
+
+---
+
+### ④ お問い合わせ返信 ＆ 実メール送信 API
+
+`src/app/api/inquiries/route.ts`
+
+```typescript
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import nodemailer from 'nodemailer';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const type = searchParams.get('type');
+  const limit = Number(searchParams.get('limit')) || 50;
+
+  try {
+    if (type === 'settings') {
+      const settings = await prisma.topSetting.findUnique({
+        where: { id: 'inquiry_settings' },
+      });
+      return NextResponse.json(settings);
+    }
+
+    const inquiries = await prisma.inquiry.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        message: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+    return NextResponse.json(inquiries);
+  } catch (error) {
+    console.error('GET Inquiries Error:', error);
+    return NextResponse.json({ error: 'データ取得エラー' }, { status: 500 });
+  }
+}
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const { companyName, name, email, content } = body;
+
+    const fullMessage = companyName
+      ? `【会社名】${companyName}\n\n${content || ''}`
+      : content || '';
+
+    const newInquiry = await prisma.inquiry.create({
+      data: {
+        name: name || '匿名',
+        email: email || '',
+        message: fullMessage,
+        status: '未対応',
+      },
+    });
+
+    try {
+      await prisma.announcement.create({
+        data: {
+          title: `【お問い合わせ】${name || '匿名'}様より新しいメッセージが届きました`,
+          category: '重要',
+          content: `差出人: ${name || '匿名'} (${email || 'メールアドレスなし'})\n\n本文:\n${fullMessage}`,
+        },
+      });
+    } catch (noticeErr) {
+      console.warn('お知らせ自動生成エラー:', noticeErr);
+    }
+
+    return NextResponse.json(newInquiry, { status: 201 });
+  } catch (error) {
+    console.error('POST Inquiry Error:', error);
+    return NextResponse.json({ error: '送信失敗' }, { status: 500 });
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const body = await req.json();
+
+    if (body.isSettings) {
+      const updatedSettings = await prisma.topSetting.upsert({
+        where: { id: 'inquiry_settings' },
+        update: { heroSubtitle: JSON.stringify(body.settingsData) },
+        create: {
+          id: 'inquiry_settings',
+          heroSubtitle: JSON.stringify(body.settingsData),
+        },
+      });
+      return NextResponse.json(updatedSettings);
+    }
+
+    if (body.isUserReply && body.userReplyText) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---USER_REPLY---\n${body.userReplyText}`;
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '未対応',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    if (body.replyText && body.email) {
+      const existingInquiry = await prisma.inquiry.findUnique({
+        where: { id: body.id },
+      });
+
+      const currentMessage = existingInquiry?.message || '';
+      const updatedMessage = `${currentMessage}\n\n---ADMIN_REPLY---\n${body.replyText}`;
+
+      let smtpUser = process.env.SMTP_USER || '';
+      let smtpPass = process.env.SMTP_PASS || '';
+      let contactEmail = smtpUser;
+
+      try {
+        const siteSetting = await prisma.setting.findFirst();
+        if (siteSetting) {
+          if (siteSetting.smtpUser) smtpUser = siteSetting.smtpUser;
+          if (siteSetting.smtpPass) smtpPass = siteSetting.smtpPass;
+          if (siteSetting.contactEmail) contactEmail = siteSetting.contactEmail;
+        }
+      } catch (e) {
+        console.warn('Settingテーブル取得スキップ:', e);
+      }
+
+      smtpPass = (smtpPass || '').replace(/^["']|["']$/g, '').trim();
+      smtpUser = (smtpUser || '').trim();
+
+      if (!smtpUser || !smtpPass) {
+        return NextResponse.json(
+          { error: '基本設定で「送信用メールアドレス」と「Googleアプリパスワード」が設定されていません。' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"BeSmile 事務局" <${smtpUser}>`,
+          replyTo: contactEmail || smtpUser,
+          to: body.email,
+          subject: `【BeSmile】お問い合わせへのご返信`,
+          text: body.replyText,
+        });
+      } catch (mailError: any) {
+        console.error('[MAIL ERROR] 実メール送信失敗:', mailError);
+        return NextResponse.json(
+          { error: `メール送信エラー: ${mailError.message || mailError}` },
+          { status: 500 }
+        );
+      }
+
+      const updatedInquiry = await prisma.inquiry.update({
+        where: { id: body.id },
+        data: {
+          message: updatedMessage,
+          status: '対応済み',
+        },
+      });
+
+      return NextResponse.json(updatedInquiry);
+    }
+
+    const updatedInquiry = await prisma.inquiry.update({
+      where: { id: body.id },
+      data: { status: body.status },
+    });
+
+    return NextResponse.json(updatedInquiry);
+  } catch (error: any) {
+    console.error('PUT Inquiry Error:', error);
+    return NextResponse.json({ error: error.message || '更新失敗' }, { status: 500 });
+  }
+}
+
+export async function DELETE(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'IDが必要です' }, { status: 400 });
+  }
+
+  try {
+    await prisma.inquiry.delete({
+      where: { id },
+    });
+    return NextResponse.json({ message: '削除完了' });
+  } catch (error) {
+    console.error('DELETE Inquiry Error:', error);
+    return NextResponse.json({ error: '削除失敗' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+## 3. 本番デプロイ手順
+
+変更を本番環境（Vercel）へ反映させる際は、ターミナルで以下を実行してください。
+
+```bash
+cd /Users/user/besmile-app
+git add .
+git commit -m "Update application settings, metadata, and media optimization"
+git push origin main
+
+```
