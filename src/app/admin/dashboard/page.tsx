@@ -27,7 +27,7 @@ export default function DashboardPage() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // ★ リアルタイムアクセス解析ステート
+  // リアルタイムアクセス解析ステート
   const [ageData, setAgeData] = useState([
     { name: '20代', value: 0, color: '#93C5FD' },
     { name: '30代', value: 0, color: '#C4B5FD' },
@@ -63,7 +63,6 @@ export default function DashboardPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // ★ リアルタイムアクセス解析データの取得
   const fetchAnalytics = async () => {
     try {
       const res = await fetch('/api/analytics', { cache: 'no-store' });
@@ -80,7 +79,7 @@ export default function DashboardPage() {
 
   const fetchAnnouncements = async () => {
     try {
-      const res = await fetch('/api/announcements');
+      const res = await fetch('/api/announcements', { cache: 'no-store' });
       if (!res.ok) throw new Error('Failed to fetch');
       const data = await res.json();
 
@@ -217,7 +216,6 @@ export default function DashboardPage() {
   }));
   const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x},${p.y}`).join(' ');
 
-  // 最多層の特定
   const topAge = [...ageData].sort((a, b) => b.value - a.value)[0] || { name: '20代', value: 0 };
 
   return (
@@ -243,14 +241,9 @@ export default function DashboardPage() {
 
       {/* 2. ダッシュボード（リアルタイムデータ連動） */}
       <section className="space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800">ダッシュボード</h1>
-            <p className="text-xs text-gray-500 mt-1">
-              ※ 各グラフは、本番サイト（トップページ等）への訪問時に自動記録されるアクセスログ（<code>AccessLog</code>テーブル）を集計してリアルタイム表示しています。
-            </p>
-          </div>
-          <span className="text-xs bg-green-100 text-green-800 font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 self-start sm:self-auto">
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-bold text-gray-800">ダッシュボード</h1>
+          <span className="text-xs bg-green-100 text-green-800 font-bold px-3 py-1 rounded-full flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
             リアルタイム同期中 (総アクセス: {totalPV} PV)
           </span>
@@ -258,123 +251,127 @@ export default function DashboardPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1">
           {/* 年齢層分析 */}
-          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
+          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4 flex flex-col justify-between">
             <div>
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center mb-2">
                 <h3 className="font-bold text-gray-700 text-base">閲覧者の年齢層割合</h3>
                 <span className="text-xs text-gray-400 font-mono">リアルタイム集計</span>
               </div>
-              <p className="text-[11px] text-gray-400 mt-0.5">
-                アクセスログに基づき推定・集計された訪問者の年代比率です。
-              </p>
-            </div>
 
-            <div className="flex items-center justify-center gap-8 h-48 relative">
-              <div className="relative w-36 h-36 flex items-center justify-center">
-                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90 transform">
-                  {ageData.map((item, idx) => {
-                    const prevSum = ageData.slice(0, idx).reduce((sum, current) => sum + current.value, 0);
-                    return (
-                      <circle
-                        key={item.name}
-                        cx="18"
-                        cy="18"
-                        r="15.915"
-                        fill="transparent"
-                        stroke={item.color}
-                        strokeWidth="3.8"
-                        strokeDasharray={`${item.value} ${100 - item.value}`}
-                        strokeDashoffset={`-${prevSum}`}
-                        className="hover:opacity-80 transition cursor-pointer"
-                        onMouseEnter={() => setHoveredAge(item)}
-                        onMouseLeave={() => setHoveredAge(null)}
-                      />
-                    );
-                  })}
-                </svg>
+              <div className="flex items-center justify-center gap-8 h-48 relative">
+                <div className="relative w-36 h-36 flex items-center justify-center">
+                  <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90 transform">
+                    {ageData.map((item, idx) => {
+                      const prevSum = ageData.slice(0, idx).reduce((sum, current) => sum + current.value, 0);
+                      return (
+                        <circle
+                          key={item.name}
+                          cx="18"
+                          cy="18"
+                          r="15.915"
+                          fill="transparent"
+                          stroke={item.color}
+                          strokeWidth="3.8"
+                          strokeDasharray={`${item.value} ${100 - item.value}`}
+                          strokeDashoffset={`-${prevSum}`}
+                          className="hover:opacity-80 transition cursor-pointer"
+                          onMouseEnter={() => setHoveredAge(item)}
+                          onMouseLeave={() => setHoveredAge(null)}
+                        />
+                      );
+                    })}
+                  </svg>
 
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                  <span className="text-xs text-gray-400">{hoveredAge ? hoveredAge.name : '最多層'}</span>
-                  <span className="text-lg font-bold text-gray-800">
-                    {hoveredAge ? `${hoveredAge.value}%` : `${topAge.name} (${topAge.value}%)`}
-                  </span>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    <span className="text-xs text-gray-400">{hoveredAge ? hoveredAge.name : '最多層'}</span>
+                    <span className="text-lg font-bold text-gray-800">
+                      {hoveredAge ? `${hoveredAge.value}%` : `${topAge.name} (${topAge.value}%)`}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-2 text-xs">
+                  {ageData.map((item) => (
+                    <div key={item.name} className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
+                      <span className="text-gray-600 font-medium">{item.name}:</span>
+                      <span className="font-bold text-gray-800">{item.value}%</span>
+                    </div>
+                  ))}
                 </div>
               </div>
-
-              <div className="space-y-2 text-xs">
-                {ageData.map((item) => (
-                  <div key={item.name} className="flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} />
-                    <span className="text-gray-600 font-medium">{item.name}:</span>
-                    <span className="font-bold text-gray-800">{item.value}%</span>
-                  </div>
-                ))}
-              </div>
             </div>
+
+            {/* 説明注記 */}
+            <p className="text-[11px] text-gray-400 border-t border-gray-100 pt-2 leading-tight">
+              ※ 本サイト訪問時のアクセスログデータ（AccessLog）をもとにリアルタイムに集計・推定された割合です。
+            </p>
           </div>
 
           {/* アクセス数推移 */}
-          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
+          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4 flex flex-col justify-between">
             <div>
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center mb-2">
                 <h3 className="font-bold text-gray-700 text-base">週間アクセス数推移 (PV)</h3>
                 <span className="text-xs text-gray-400 font-mono">今週のデータ</span>
               </div>
-              <p className="text-[11px] text-gray-400 mt-0.5">
-                今週（月〜日）のページ閲覧回数（PV）の推移を集計しています。
-              </p>
-            </div>
 
-            <div className="h-48 relative flex flex-col justify-between pt-2">
-              <div className="h-6 text-center">
-                {hoveredLine ? (
-                  <span className="text-xs font-bold bg-gray-800 text-white px-3 py-1 rounded-full">
-                    {hoveredLine.day}曜日: {hoveredLine.pv} PV
-                  </span>
-                ) : (
-                  <span className="text-xs text-gray-400">グラフの点にカーソルを合わせると数値を確認できます</span>
-                )}
-              </div>
-
-              <div className="relative w-full h-32 flex items-end">
-                <svg className="w-full h-full overflow-visible" viewBox="0 0 300 100" preserveAspectRatio="none">
-                  <line x1="0" y1="20" x2="300" y2="20" stroke="#F3F4F6" strokeWidth="1" />
-                  <line x1="0" y1="50" x2="300" y2="50" stroke="#F3F4F6" strokeWidth="1" />
-                  <line x1="0" y1="80" x2="300" y2="80" stroke="#F3F4F6" strokeWidth="1" />
-
-                  {points.length > 0 && (
-                    <>
-                      <path
-                        d={`${pathD} L ${points[points.length - 1].x},100 L ${points[0].x},100 Z`}
-                        fill="rgba(218, 230, 220, 0.4)"
-                      />
-                      <path d={pathD} fill="transparent" stroke="#82A385" strokeWidth="3" strokeLinecap="round" />
-                    </>
+              <div className="h-48 relative flex flex-col justify-between pt-2">
+                <div className="h-6 text-center">
+                  {hoveredLine ? (
+                    <span className="text-xs font-bold bg-gray-800 text-white px-3 py-1 rounded-full">
+                      {hoveredLine.day}曜日: {hoveredLine.pv} PV
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">グラフの点にカーソルを合わせると数値を確認できます</span>
                   )}
+                </div>
 
-                  {points.map((pt, idx) => (
-                    <circle
-                      key={idx}
-                      cx={pt.x}
-                      cy={pt.y}
-                      r="5"
-                      fill="#82A385"
-                      stroke="#FFFFFF"
-                      strokeWidth="2"
-                      className="hover:r-7 transition-all cursor-pointer"
-                      onMouseEnter={() => setHoveredLine(pt.item)}
-                      onMouseLeave={() => setHoveredLine(null)}
-                    />
+                <div className="relative w-full h-32 flex items-end">
+                  <svg className="w-full h-full overflow-visible" viewBox="0 0 300 100" preserveAspectRatio="none">
+                    <line x1="0" y1="20" x2="300" y2="20" stroke="#F3F4F6" strokeWidth="1" />
+                    <line x1="0" y1="50" x2="300" y2="50" stroke="#F3F4F6" strokeWidth="1" />
+                    <line x1="0" y1="80" x2="300" y2="80" stroke="#F3F4F6" strokeWidth="1" />
+
+                    {points.length > 0 && (
+                      <>
+                        <path
+                          d={`${pathD} L ${points[points.length - 1].x},100 L ${points[0].x},100 Z`}
+                          fill="rgba(218, 230, 220, 0.4)"
+                        />
+                        <path d={pathD} fill="transparent" stroke="#82A385" strokeWidth="3" strokeLinecap="round" />
+                      </>
+                    )}
+
+                    {points.map((pt, idx) => (
+                      <circle
+                        key={idx}
+                        cx={pt.x}
+                        cy={pt.y}
+                        r="5"
+                        fill="#82A385"
+                        stroke="#FFFFFF"
+                        strokeWidth="2"
+                        className="hover:r-7 transition-all cursor-pointer"
+                        onMouseEnter={() => setHoveredLine(pt.item)}
+                        onMouseLeave={() => setHoveredLine(null)}
+                      />
+                    ))}
+                  </svg>
+                </div>
+
+                <div className="flex justify-between text-xs text-gray-400 font-mono px-1 border-t pt-1">
+                  {lineData.map((d) => (
+                    <span key={d.day}>{d.day}</span>
                   ))}
-                </svg>
-              </div>
-
-              <div className="flex justify-between text-xs text-gray-400 font-mono px-1 border-t pt-1">
-                {lineData.map((d) => (
-                  <span key={d.day}>{d.day}</span>
-                ))}
+                </div>
               </div>
             </div>
+
+            {/* 説明注記 */}
+            <p className="text-[11px] text-gray-400 border-t border-gray-100 pt-2 leading-tight">
+              ※ サイト各ページに埋め込まれた計測トラッカー（AnalyticsTracker）が記録したページ閲覧数（PV）です。
+            </p>
           </div>
         </div>
       </section>
@@ -387,7 +384,7 @@ export default function DashboardPage() {
             <button
               onClick={() => setIsAllNoticeModalOpen(true)}
               title="お知らせの詳しい一覧をみる"
-              className="p-1 hover:bg-gray-100 rounded-lg transition-transform active:scale-95"
+              className="p-1 hover:bg-gray-100 rounded-lg transition-transform active:scale-95 cursor-pointer"
             >
               <Image src="/icons/notice.png" alt="お知らせベル" width={32} height={32} className="object-contain" />
             </button>
@@ -408,14 +405,14 @@ export default function DashboardPage() {
           ) : announcements.length === 0 ? (
             <p className="text-sm text-gray-400 py-4 text-center">現在お知らせはありません。</p>
           ) : (
-            announcements.map((item) => (
+            announcements.slice(0, 3).map((item) => (
               <div
                 key={item.id}
                 onClick={() => handleOpenNoticeModal(item)}
                 className="p-4 bg-gray-50/80 hover:bg-gray-100 rounded-xl cursor-pointer transition flex items-center justify-between text-gray-800 font-medium text-sm"
               >
-                <span>{item.title}</span>
-                <span className="text-xs text-gray-400 font-mono">→ 詳細</span>
+                <span className="truncate pr-4">{item.title}</span>
+                <span className="text-xs text-gray-400 font-mono flex-shrink-0">→ 詳細</span>
               </div>
             ))
           )}
@@ -490,7 +487,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* 詳細・編集モーダル */}
       {selectedNotice && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-xl space-y-4 relative">
