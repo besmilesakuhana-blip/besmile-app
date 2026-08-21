@@ -52,8 +52,8 @@ export default function TopSettingsPage() {
     const fetchData = async () => {
       try {
         const [resSettings, resPhotos] = await Promise.all([
-          fetch('/api/top-settings', { next: { revalidate: 60 } }),
-          fetch('/api/photos', { next: { revalidate: 60 } }),
+          fetch('/api/top-settings', { cache: 'no-store' }),
+          fetch('/api/photos', { cache: 'no-store' }),
         ]);
 
         if (resSettings.ok && isMounted) {
@@ -109,7 +109,7 @@ export default function TopSettingsPage() {
 
   const handleAutoCalculateCounts = async () => {
     try {
-      const res = await fetch('/api/creators', { next: { revalidate: 60 } });
+      const res = await fetch('/api/creators', { cache: 'no-store' });
       if (!res.ok) return;
       const creators = await res.json();
 
@@ -332,29 +332,43 @@ export default function TopSettingsPage() {
         </div>
 
         {/* メインビジュアル画像設定 */}
-        <div className="space-y-5 border-t pt-6">
-          <h2 className="text-lg font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#EFDCC9]"></span>
-            トップメインビジュアル画像
-          </h2>
+        <div className="space-y-4 border-t pt-6">
+          <div>
+            <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#EFDCC9]"></span>
+              トップメインビジュアル画像
+            </h2>
+            {/* ★ 表示比率・仕様の案内文 */}
+            <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+              トップページのモザイク枠に左から順に<strong>最大5枚（WEB / 動画 / DTP / イラスト / Other）</strong>表示されます。<br />
+              推奨比率: <strong>横長（16:9 または 4:3）〜正方形（1:1）</strong>（※枠に合わせて中央トリミングされます）
+            </p>
+          </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
-            {topImages.map((url, idx) => (
-              <div
-                key={idx}
-                onClick={() => handleOpenMediaModal(idx)}
-                className="group relative h-36 bg-gray-50 border-2 border-gray-200 hover:border-blue-400 rounded-xl overflow-hidden cursor-pointer transition flex items-center justify-center p-2"
-              >
-                <img src={url} alt={`トップ画像 ${idx + 1}`} className="w-full h-full object-contain" />
-                <button
-                  type="button"
-                  onClick={(e) => handleDeleteImage(idx, e)}
-                  className="absolute top-1.5 right-1.5 w-6 h-6 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs font-bold flex items-center justify-center shadow-md z-10"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-1">
+            {topImages.map((url, idx) => {
+              const labels = ['1. WEB', '2. 動画', '3. DTP', '4. イラスト', '5. Other'];
+              return (
+                <div key={idx} className="space-y-1">
+                  <span className="text-[10px] font-bold text-gray-500 block text-center">
+                    {labels[idx] || `${idx + 1}枚目`}
+                  </span>
+                  <div
+                    onClick={() => handleOpenMediaModal(idx)}
+                    className="group relative h-28 bg-gray-50 border-2 border-gray-200 hover:border-blue-400 rounded-xl overflow-hidden cursor-pointer transition flex items-center justify-center p-1.5"
+                  >
+                    <img src={url} alt={`トップ画像 ${idx + 1}`} className="w-full h-full object-cover rounded-lg" />
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteImage(idx, e)}
+                      className="absolute top-1 right-1 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full text-[10px] font-bold flex items-center justify-center shadow-md z-10"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           <button
