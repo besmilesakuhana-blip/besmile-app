@@ -23,11 +23,11 @@ const menuCards = [
   { name: 'お問い合わせ管理', path: '/admin/inquiries', icon: '/icons/inquiries.png', bg: 'bg-[#DAE6DC]' },
 ];
 
-export default function DashboardPage() {
+export default function AdminPage() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // ★ リアルタイムアクセス解析ステート
+  // リアルタイムアクセス解析ステート
   const [ageData, setAgeData] = useState([
     { name: '20代', value: 0, color: '#93C5FD' },
     { name: '30代', value: 0, color: '#C4B5FD' },
@@ -63,7 +63,6 @@ export default function DashboardPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // ★ リアルタイムアクセス解析データの取得
   const fetchAnalytics = async () => {
     try {
       const res = await fetch('/api/analytics', { cache: 'no-store' });
@@ -217,7 +216,6 @@ export default function DashboardPage() {
   }));
   const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x},${p.y}`).join(' ');
 
-  // 最多層の特定
   const topAge = [...ageData].sort((a, b) => b.value - a.value)[0] || { name: '20代', value: 0 };
 
   return (
@@ -304,8 +302,8 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* ★ 説明注記 */}
-            <p className="text-[11px] text-gray-500 bg-[#FAF8F5] p-2.5 rounded-lg border border-gray-100 leading-relaxed">
+            {/* 説明注記 */}
+            <p className="text-[11px] text-gray-400 border-t border-gray-100 pt-2 leading-tight">
               ※ 本サイト訪問時のアクセスログデータ（AccessLog）をもとにリアルタイムに集計・推定された割合です。
             </p>
           </div>
@@ -370,15 +368,15 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* ★ 説明注記 */}
-            <p className="text-[11px] text-gray-500 bg-[#FAF8F5] p-2.5 rounded-lg border border-gray-100 leading-relaxed">
+            {/* 説明注記 */}
+            <p className="text-[11px] text-gray-400 border-t border-gray-100 pt-2 leading-tight">
               ※ サイト各ページに埋め込まれた計測トラッカー（AnalyticsTracker）が記録したページ閲覧数（PV）です。
             </p>
           </div>
         </div>
       </section>
 
-      {/* 3. お知らせ（★ 最新3件のみ表示 ★） */}
+      {/* 3. お知らせ */}
       <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -602,7 +600,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ベルアイコン用 全件お知らせモーダル */}
       {isAllNoticeModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-5 relative">
