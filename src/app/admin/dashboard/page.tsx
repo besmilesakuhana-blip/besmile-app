@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 
@@ -27,7 +27,7 @@ export default function DashboardPage() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // リアルタイムアクセス解析ステート
+  // ★ リアルタイムアクセス解析ステート
   const [ageData, setAgeData] = useState([
     { name: '20代', value: 0, color: '#93C5FD' },
     { name: '30代', value: 0, color: '#C4B5FD' },
@@ -63,56 +63,53 @@ export default function DashboardPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const fetchDashboardData = async (forceRefresh = false) => {
+  // ★ リアルタイムアクセス解析データの取得
+  const fetchAnalytics = async () => {
     try {
-      const fetchOption: RequestInit = forceRefresh
-        ? { cache: 'reload' }
-        : { cache: 'no-store' };
-
-      const [resAnalytics, resAnnouncements] = await Promise.all([
-        fetch('/api/analytics', fetchOption),
-        fetch('/api/announcements', fetchOption),
-      ]);
-
-      if (resAnalytics.ok) {
-        const data = await resAnalytics.json();
+      const res = await fetch('/api/analytics', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
         if (data.lineData) setLineData(data.lineData);
         if (data.ageData) setAgeData(data.ageData);
         if (data.totalPV !== undefined) setTotalPV(data.totalPV);
       }
-
-      if (resAnnouncements.ok) {
-        const data = await resAnnouncements.json();
-        const formattedData: Announcement[] = data.map((item: any) => ({
-          id: item.id,
-          title: item.title,
-          category: item.category || 'お知らせ',
-          content: item.content,
-          date: new Date(item.createdAt).toLocaleString('ja-JP', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-        }));
-        setAnnouncements(formattedData);
-      }
     } catch (error) {
-      console.error('ダッシュボードデータの取得エラー:', error);
+      console.error('アクセス解析の取得エラー:', error);
+    }
+  };
+
+  const fetchAnnouncements = async () => {
+    try {
+      const res = await fetch('/api/announcements');
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+
+      const formattedData: Announcement[] = data.map((item: any) => ({
+        id: item.id,
+        title: item.title,
+        category: item.category || 'お知らせ',
+        content: item.content,
+        date: new Date(item.createdAt).toLocaleString('ja-JP', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      }));
+
+      setAnnouncements(formattedData);
+    } catch (error) {
+      console.error('お知らせの取得エラー:', error);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchDashboardData();
+    fetchAnnouncements();
+    fetchAnalytics();
   }, []);
-
-  // ★ 最新3件のみを確実に抽出
-  const latestThreeAnnouncements = useMemo(() => {
-    return announcements.slice(0, 3);
-  }, [announcements]);
 
   const handleOpenNoticeModal = (notice: Announcement) => {
     setSelectedNotice(notice);
@@ -149,7 +146,7 @@ export default function DashboardPage() {
       setNewCategory('お知らせ');
       setIsCreateModalOpen(false);
 
-      await fetchDashboardData(true);
+      await fetchAnnouncements();
       alert('お知らせを投稿しました！');
     } catch (error) {
       console.error('投稿エラー:', error);
@@ -179,7 +176,7 @@ export default function DashboardPage() {
 
       setIsEditMode(false);
       setSelectedNotice(null);
-      await fetchDashboardData(true);
+      await fetchAnnouncements();
       alert('お知らせを更新しました！');
     } catch (error) {
       console.error('更新エラー:', error);
@@ -200,7 +197,7 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error('削除に失敗しました');
 
       setSelectedNotice(null);
-      await fetchDashboardData(true);
+      await fetchAnnouncements();
       alert('お知らせを削除しました。');
     } catch (error) {
       console.error('削除エラー:', error);
@@ -210,7 +207,7 @@ export default function DashboardPage() {
     }
   };
 
-  // 折れ線グラフ動的計算
+  // 折れ線グラフ計算用
   const maxPV = Math.max(...lineData.map((d) => d.pv), 10);
   const getSvgY = (pv: number) => 80 - (pv / maxPV) * 60;
   const points = lineData.map((d, i) => ({
@@ -220,6 +217,7 @@ export default function DashboardPage() {
   }));
   const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x},${p.y}`).join(' ');
 
+  // 最多層の特定
   const topAge = [...ageData].sort((a, b) => b.value - a.value)[0] || { name: '20代', value: 0 };
 
   return (
@@ -243,11 +241,16 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* 2. ダッシュボード */}
+      {/* 2. ダッシュボード（リアルタイムデータ連動） */}
       <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold text-gray-800">ダッシュボード</h1>
-          <span className="text-xs bg-green-100 text-green-800 font-bold px-3 py-1 rounded-full flex items-center gap-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800">ダッシュボード</h1>
+            <p className="text-xs text-gray-500 mt-1">
+              ※ 各グラフは、本番サイト（トップページ等）への訪問時に自動記録されるアクセスログ（<code>AccessLog</code>テーブル）を集計してリアルタイム表示しています。
+            </p>
+          </div>
+          <span className="text-xs bg-green-100 text-green-800 font-bold px-3 py-1.5 rounded-full flex items-center gap-1.5 self-start sm:self-auto">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
             リアルタイム同期中 (総アクセス: {totalPV} PV)
           </span>
@@ -256,9 +259,14 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1">
           {/* 年齢層分析 */}
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-bold text-gray-700 text-base">閲覧者の年齢層割合</h3>
-              <span className="text-xs text-gray-400 font-mono">リアルタイム集計</span>
+            <div>
+              <div className="flex justify-between items-center">
+                <h3 className="font-bold text-gray-700 text-base">閲覧者の年齢層割合</h3>
+                <span className="text-xs text-gray-400 font-mono">リアルタイム集計</span>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                アクセスログに基づき推定・集計された訪問者の年代比率です。
+              </p>
             </div>
 
             <div className="flex items-center justify-center gap-8 h-48 relative">
@@ -307,12 +315,17 @@ export default function DashboardPage() {
 
           {/* アクセス数推移 */}
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-bold text-gray-700 text-base">週間アクセス数推移 (PV)</h3>
-              <span className="text-xs text-gray-400 font-mono">今週のデータ</span>
+            <div>
+              <div className="flex justify-between items-center">
+                <h3 className="font-bold text-gray-700 text-base">週間アクセス数推移 (PV)</h3>
+                <span className="text-xs text-gray-400 font-mono">今週のデータ</span>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                今週（月〜日）のページ閲覧回数（PV）の推移を集計しています。
+              </p>
             </div>
 
-            <div className="h-48 relative flex flex-col justify-between pt-4">
+            <div className="h-48 relative flex flex-col justify-between pt-2">
               <div className="h-6 text-center">
                 {hoveredLine ? (
                   <span className="text-xs font-bold bg-gray-800 text-white px-3 py-1 rounded-full">
@@ -366,17 +379,17 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* 3. お知らせ（★ 常に最新3件のみ表示 ★） */}
+      {/* 3. お知らせ */}
       <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-gray-800">お知らせ</h2>
             <button
               onClick={() => setIsAllNoticeModalOpen(true)}
-              title="お知らせの全件一覧をみる"
-              className="p-1.5 hover:bg-gray-100 rounded-xl transition-all active:scale-95 flex items-center justify-center cursor-pointer"
+              title="お知らせの詳しい一覧をみる"
+              className="p-1 hover:bg-gray-100 rounded-lg transition-transform active:scale-95"
             >
-              <Image src="/icons/notice.png" alt="お知らせベル" width={28} height={28} className="object-contain" />
+              <Image src="/icons/notice.png" alt="お知らせベル" width={32} height={32} className="object-contain" />
             </button>
           </div>
 
@@ -392,17 +405,17 @@ export default function DashboardPage() {
         <div className="space-y-3">
           {isLoading ? (
             <p className="text-sm text-gray-400 py-4 text-center">読み込み中...</p>
-          ) : latestThreeAnnouncements.length === 0 ? (
+          ) : announcements.length === 0 ? (
             <p className="text-sm text-gray-400 py-4 text-center">現在お知らせはありません。</p>
           ) : (
-            latestThreeAnnouncements.map((item) => (
+            announcements.map((item) => (
               <div
                 key={item.id}
                 onClick={() => handleOpenNoticeModal(item)}
                 className="p-4 bg-gray-50/80 hover:bg-gray-100 rounded-xl cursor-pointer transition flex items-center justify-between text-gray-800 font-medium text-sm"
               >
-                <span className="truncate pr-4">{item.title}</span>
-                <span className="text-xs text-gray-400 font-mono flex-shrink-0">→ 詳細</span>
+                <span>{item.title}</span>
+                <span className="text-xs text-gray-400 font-mono">→ 詳細</span>
               </div>
             ))
           )}
@@ -608,26 +621,22 @@ export default function DashboardPage() {
             </div>
 
             <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-              {announcements.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-6">お知らせはありません。</p>
-              ) : (
-                announcements.map((item) => (
-                  <div
-                    key={item.id}
-                    onClick={() => {
-                      handleOpenNoticeModal(item);
-                      setIsAllNoticeModalOpen(false);
-                    }}
-                    className="p-3.5 border border-gray-200 rounded-xl hover:bg-gray-50 cursor-pointer transition space-y-1"
-                  >
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-blue-600">{item.category}</span>
-                      <span className="text-gray-400 font-mono">{item.date}</span>
-                    </div>
-                    <div className="font-bold text-sm text-gray-800">{item.title}</div>
+              {announcements.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => {
+                    handleOpenNoticeModal(item);
+                    setIsAllNoticeModalOpen(false);
+                  }}
+                  className="p-3.5 border border-gray-200 rounded-xl hover:bg-gray-50 cursor-pointer transition space-y-1"
+                >
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-bold text-blue-600">{item.category}</span>
+                    <span className="text-gray-400 font-mono">{item.date}</span>
                   </div>
-                ))
-              )}
+                  <div className="font-bold text-sm text-gray-800">{item.title}</div>
+                </div>
+              ))}
             </div>
 
             <div className="flex justify-end pt-2 border-t">
